@@ -1,0 +1,134 @@
+
+# Simulation Input Template
+
+# General Simulation Parameters
+time_steps: 108000  # Number of time steps for the simulation
+end_time: 108000 # total simulation time
+T_sur: 300 #Surroundings temperature
+#T_batt_full: 2673 #battery zero charge temp
+DT_batt_full: 50 #DT between max Tin temp and target battery full temp
+T_tin_max_heat: 2723 #max Tin temp in heater
+DT_batt: 500 #battery design temp range
+init_batt_state: 0 #initial battery charge state
+N_loops_step: 8 #simulation speed-up factor
+heat_loss_bool: False #account for pipe heat loss
+block_heat_loss_bool: False #account for block heat loss
+simple_heater_bool: True #skip heater element temp calculation
+bypass_bool: True #activate storage block bypass
+powerstick_bypass_bool: False #activate storage block bypass
+vary_flowrate_bool: False
+print_outputs_bool: True
+liner_bool: False #Tungsten liner or none
+
+# Input Definitions
+heat_inputs:
+  - range: [0, 107999]
+    value: 7.5e5  # Heat input in Watts for time steps 0 to 49
+  #- range: [54000, 107999]
+  #  value: 1  # Heat input in Watts for time steps 0 to 49
+flow_rates:
+  - range: [0, 107999]
+    value: 35
+emissivity_tables:
+  - range: [0, 107999]
+    value: 
+      - [[0.1, 1.0], 0.0001, 0.0001, 0.0001]  # Below 1 micron
+      - [[1.0, 20.0], 0.0001, 0.0001, 0.0001]  # Above 1 micron
+  #- range: [54000, 107999]
+  #  value: 
+  #    - [[0.05, 1.0], 0.95, 0.05, 0.02]  # Below 1 micron
+  #    - [[1.0, 40.0], 0.05, 0.05, 0.02]  # Above 1 micron
+
+#power_conversion_bypass_fractions:
+#  - range: [0, 143999]
+#    value: 0.3  # Fraction of flow rate bypassing the power conversion block
+
+
+# Fluid Initial Conditions
+N_stations: 8 #number of fluid locations tracked
+initial_fluids:
+  #temperature: 2173  # Temperature in Kelvin
+  pressure: 1e6  # Pressure in Pascals
+  flow_rate: 1  # Flow rate in kg/s
+
+# Pump Parameters
+pump:
+  efficiency: 0.85  # Pump efficiency
+
+# Heater Parameters
+heater:
+  heat_input: 1e5 # heat input [W]
+  N_pipes: 6  # Number of pipes in the heater
+  N_heat: 1 #number of heater planes
+  H_panel: 0.5 #height of Tin-bearing heating panels
+  H_heat: 0.5 #total height of heater elements in heater plane
+  max_heater_temperature: 2773
+  Pipe:
+    length: 1.0  # Length of the pipe in meters
+    OD: 0.089  # Diameter of the pipe in meters
+    wall_thickness: 0.0095  # Wall thickness of the pipe in meters
+    roughness: 3e-5  # Roughness of the pipe in meters
+    th_ins: 0.0 #insulation thickness
+
+# Storage Module Parameters
+storage:
+  Volume: 5.3 # total storage volume
+  N_pipes: 2  # Number of pipes in the storage module
+  Pipe:
+    length: 4.267  # Length of the pipe in meters
+    OD: 0.089  # Diameter of the pipe in meters
+    wall_thickness: 0.0095  # Wall thickness of the pipe in meters
+    roughness: 3e-5  # Roughness of the pipe in meters
+    th_ins: 0.0 #insulation thickness
+  num_ax_segments: 6  # Number of axial segments in the storage module
+  num_rad_segments: 5  # Number of radial segments in the storage module
+  Block:
+    #initial_temp: 2173  # Initial temperature distribution in the block (example values)
+    inner_radius: 0.15  # Inner radius of the block in meters
+    #outer_radius: 0.316  # Outer radius of the block in meters
+    length: 4.267  # Length of the block in meters
+    th_ins: 0.25 #insulation thickness
+  Bypass:
+    range: [0.001, 0.999] # Allowable bypass ratio range
+
+# Power Conversion Block Parameters
+power_conversion:
+  axial_steps: 4  # Number of axial discretization steps
+  N_cells: 2  # Number of powerstick/emitter assemblies
+  height_pipe: 0.01  # Height of the rectangular pipe in meters
+  width_emitter: 0.186  # Width of the emitter in meters
+  length: 1.524  # Length of the components in meters
+  roughness_pipe: 3e-5  # Roughness of the pipe in meters
+  width_powerstick: 0.13  # Width of the power stick in meters
+  wall_thickness: 0.01  # Thickness of the graphite wall in meters
+  cooling_temp: 313  # Cooling temperature to maintain the power stick in Kelvin
+  panel_efficiency: 0.5  # Panel conversion efficiency above bandgap
+  f_bare: 0.28 # powerstick area fraction not covered by SNGC
+  f_active: 0.85 # electrical generation area fraction of SNGC-covered area
+  emissivity_table:  # List of tuples containing wavelength ranges and corresponding emissivities
+    - [[0.01, 1.0], 0.95, 0.05, 0.02]
+    - [[1.0, 50], 0.05, 0.05, 0.02]  # Example: [[wavelength range start, wavelength range end], emissivity]
+  max_inlet_temp: 2173 # Maximum allowable temperature into PCB
+
+# Pipe Parameters
+pipes:
+  - length: 3.0  # Length of the pipe in meters
+    OD: 0.089  # Diameter of the pipe in meters
+    wall_thickness: 0.005  # Wall thickness of the pipe in meters
+    roughness: 3e-5  # Roughness of the pipe in meters
+    th_ins: 0.02 # insulation thickness
+  - length: 3.0  # Length of the pipe in meters
+    OD: 0.089  # Diameter of the pipe in meters
+    wall_thickness: 0.005  # Wall thickness of the pipe in meters
+    roughness: 3e-5  # Roughness of the pipe in meters
+    th_ins: 0.02 # insulation thickness
+  - length: 3.0  # Length of the pipe in meters
+    OD: 0.089  # Diameter of the pipe in meters
+    wall_thickness: 0.005  # Wall thickness of the pipe in meters
+    roughness: 3e-5  # Roughness of the pipe in meters
+    th_ins: 0.02 # insulation thickness
+  - length: 3.0  # Length of the pipe in meters
+    OD: 0.089  # Diameter of the pipe in meters
+    wall_thickness: 0.005  # Wall thickness of the pipe in meters
+    roughness: 3e-5  # Roughness of the pipe in meters
+    th_ins: 0.02 # insulation thickness

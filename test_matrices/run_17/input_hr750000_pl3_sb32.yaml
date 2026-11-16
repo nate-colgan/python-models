@@ -1,0 +1,146 @@
+N_loops_step: 32
+T_sur: 300
+bypass_bool: false
+emissivity_tables:
+- range:
+  - 0
+  - 143999
+  value:
+  - - - 0.1
+      - 1.0
+    - 0.001
+    - 0.05
+    - 0.02
+  - - - 1.0
+      - 20.0
+    - 0.001
+    - 0.05
+    - 0.02
+end_time: 144000
+flow_rates:
+- range:
+  - 0
+  - 143999
+  value: 35.0
+heat_inputs:
+- range:
+  - 0
+  - 143999
+  value: 750000
+heat_loss_bool: false
+heater:
+  N_pipes: 10
+  Pipe:
+    OD: 0.0445
+    length: 2.0
+    roughness: 3e-5
+    th_ins: 0.0
+    wall_thickness: 0.0095
+  heat_input: 1e5
+initial_fluids:
+  heater_inlet:
+    flow_rate: 0
+    pressure: 1e6
+    temperature: 2123
+  heater_outlet:
+    flow_rate: 0
+    pressure: 1e6
+    temperature: 2123
+  power_conversion_inlet:
+    flow_rate: 0
+    pressure: 1e6
+    temperature: 2123
+  power_conversion_outlet:
+    flow_rate: 0
+    pressure: 1e6
+    temperature: 2123
+  pump_inlet:
+    flow_rate: 0
+    pressure: 1e6
+    temperature: 2123
+  pump_outlet:
+    flow_rate: 0
+    pressure: 1e6
+    temperature: 2123
+  storage_inlet:
+    flow_rate: 0
+    pressure: 1e6
+    temperature: 2123
+  storage_outlet:
+    flow_rate: 0
+    pressure: 1e6
+    temperature: 2123
+pipes:
+- OD: 0.05
+  length: 1.0
+  roughness: 3e-5
+  th_ins: 0.25
+  wall_thickness: 0.005
+- OD: 0.05
+  length: 1.0
+  roughness: 3e-5
+  th_ins: 0.25
+  wall_thickness: 0.005
+- OD: 0.05
+  length: 1.0
+  roughness: 3e-5
+  th_ins: 0.25
+  wall_thickness: 0.005
+- OD: 0.05
+  length: 1.0
+  roughness: 3e-5
+  th_ins: 0.25
+  wall_thickness: 0.005
+power_conversion:
+  N_cells: 1
+  axial_steps: 4
+  cooling_temp: 313
+  emissivity_table:
+  - - - 0.0
+      - 1.0
+    - 0.95
+    - 0.05
+    - 0.02
+  - - - 1.0
+      - 1e4
+    - 0.1
+    - 0.05
+    - 0.02
+  f_active: 0.85
+  f_bare: 0.25
+  height_pipe: 0.01
+  length: 3
+  max_inlet_temp: 2373
+  panel_efficiency: 0.5
+  roughness_pipe: 3e-5
+  wall_thickness: 0.01
+  width_emitter: 0.25
+  width_powerstick: 0.1
+power_conversion_bypass_fractions:
+- range:
+  - 0
+  - 143999
+  value: 0.3
+pump:
+  efficiency: 0.85
+simple_heater_bool: true
+storage:
+  Block:
+    initial_temp: 2123
+    inner_radius: 0.05
+    length: 1.55
+  Bypass:
+    range:
+    - 0.01
+    - 0.99
+  N_pipes: 32
+  Pipe:
+    OD: 0.0445
+    length: 1.55
+    roughness: 3e-5
+    th_ins: 0.0
+    wall_thickness: 0.0095
+  Volume: 8.0
+  num_ax_segments: 6
+  num_rad_segments: 5
+time_steps: 144000

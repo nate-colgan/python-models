@@ -1,0 +1,74 @@
+
+# Tinless System Model - Simulation Input
+# Graphite storage block radiating directly to a central powerstick (no tin piping)
+
+# -- General Simulation Parameters --------------------------------------------
+end_time: 240000          # total simulation time [s]  (50 hr discharge)
+dt_short: 60              # timestep [s] — used for the first dt_short_duration seconds
+dt_medium: 600             # timestep [s] — used when shade is active and not clamped
+dt_long: 1200               # timestep [s] — used when shade is clamped at f_shade_max
+dt_short_duration: 3600    # seconds of real time to use dt_short at the start
+sub_steps: 5              # FD sub-steps per time step (stability)
+T_sur: 300                # surroundings temperature [K]
+block_heat_loss_bool: False
+liner_bool: True         # True = TaC liner, False = no liner
+liner_material: graphite      # tac = TaC-coated inner face; graphite = uncoated graphite
+shade_bool: True       # True = insulating graphite shade, False = no shade
+print_outputs_bool: True
+
+# -- Emissivity Table ---------------------------------------------------------
+# Format per band: [[wl_min, wl_max], emis_active, emis_bare, emis_inactive]
+# Use range format to allow time-varying tables (e.g. panels offline during charging)
+emissivity_tables:
+  - range: [0, end_time-1]
+    value:
+      - [[0.1, 1.24], 0.9, 0.02, 0.02]   # below bandgap
+      - [[1.24, 20.0], 0.015, 0.02, 0.02]  # above bandgap
+
+# -- Storage Block ------------------------------------------------------------
+storage:
+  avg_flux: 7.5            # average power density to extract [W/cm^2]
+  duration_hr: 50          # discharge duration [hr]
+  T_min: 1873              # minimum (empty) block temperature [K]
+  block_temp_range: 800    # operating temperature swing [K]
+  L: 8                   # axial length [m]
+  th_ins: 0.0              # outer-wall insulation thickness [m]
+  num_ax_segments: 3
+  num_rad_segments: 10
+
+# -- Powerstick ---------------------------------------------------------------
+powerstick:
+  side_len: 0.26           # square cross-section side length [m]
+  area_ratio: 5            # D_in / D_ps_eff
+  cooling_temp: 323        # powerstick cooling temperature [K]
+  f_bare: 0.05
+  f_active: .9
+  liner_side_len: 0.5     # square side length of liner [m]; r_liner = 2*side_len/pi
+  liner_thickness: 0.005  # liner wall thickness [m]
+  tungsten_foil: false   # add W foil between TaC face and powerstick
+
+# -- Insulating Shade -------------------------------------------------------
+# Octagonal shade surrounding the liner.
+# liner_to_shade_perimeter_ratio = shade_perimeter / liner_perimeter
+# r_shade_eff = ratio * 2 * liner_side_len / pi  (equivalent circular radius)
+# f_shade is found by bisection to hold cell flux at storage.avg_flux.
+# shade_bool=False disables the shade.
+shade:
+  liner_to_shade_perimeter_ratio: 1.707  # 1 + sqrt(2)/2; octagon with L = liner_side_len
+  thickness: 0.0391          # shade wall thickness [m]
+  surface_emissivity: 0.9         # emissivity of shade surfaces
+  num_conduction_layers: 5 # number of layers for 1-D conduction model through shade
+  corner_gap: 0.003175     # gap between adjacent panel edges at fully-closed [m] (= 1/8 in)
+  outer_foil: false          # true = W foil on shade outer face (adds radiative resistance)
+  
+# -- Heater ------------------------------------------------------------------
+# Central cylindrical resistive heating element used during charging.
+# Phase 1: max_power supplied; T_heater rises as graphite warms.
+# Phase 2: T_heater reaches max_temperature; power reduces to hold that temp.
+# Heating stops when block T_avg reaches T_min + block_temp_range.
+heater:
+  side_len: 0.15            # m   (heater rod side length)
+  area_ratio: 8.75           # D_in / D_heater  (controls heater-to-inner-wall gap)
+  max_temperature: 2873     # K   (maximum heater surface temperature)
+  max_power: 400000         # W   (maximum electrical power input)
+  emissivity: 0.85           # gray-body emissivity of heater surface

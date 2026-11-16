@@ -1,0 +1,121 @@
+
+# Simulation Input Template
+
+# General Simulation Parameters
+time_steps: 720000  # Number of time steps for the simulation
+end_time: 720000 # total simulation time
+T_sur: 300 #Surroundings temperature
+N_loops_step: 21
+heat_loss_bool: False
+simple_heater_bool: False
+bypass_bool: True
+vary_flowrate_bool: True
+print_outputs_bool: True
+
+# Input Definitions
+heat_inputs:
+  - range: [0, 359999]
+    value: 1e8  # Heat input in Watts for time steps 0 to 49
+  - range: [360000, 719999]
+    value: 1  # Heat input in Watts for time steps 0 to 49
+flow_rates:
+  - range: [0, 719999]
+    value: 3500
+emissivity_tables:
+  - range: [0, 359999]
+    value: 
+      - [[0.1, 1.0], 0.001, 0.05, 0.02]  # Below 1 micron
+      - [[1.0, 20.0], 0.001, 0.05, 0.02]  # Above 1 micron
+  - range: [360000, 719999]
+    value: 
+      - [[0.1, 1.0], 0.95, 0.05, 0.02]  # Below 1 micron
+      - [[1.0, 20.0], 0.1, 0.05, 0.02]  # Above 1 micron
+
+#power_conversion_bypass_fractions:
+#  - range: [0, 143999]
+#    value: 0.3  # Fraction of flow rate bypassing the power conversion block
+
+
+# Fluid Initial Conditions
+N_stations: 8 #number of fluid locations tracked
+initial_fluids:
+  temperature: 2173  # Temperature in Kelvin
+  pressure: 1e6  # Pressure in Pascals
+  flow_rate: 1  # Flow rate in kg/s
+
+# Pump Parameters
+pump:
+  efficiency: 0.85  # Pump efficiency
+
+# Heater Parameters
+heater:
+  heat_input: 1e5 # heat input [W]
+  N_pipes: 6000  # Number of pipes in the heater
+  Pipe:
+    length: 1.0  # Length of the pipe in meters
+    OD: 0.0445  # Diameter of the pipe in meters
+    wall_thickness: 0.0095  # Wall thickness of the pipe in meters
+    roughness: 3e-5  # Roughness of the pipe in meters
+    th_ins: 0.0 #insulation thickness
+
+# Storage Module Parameters
+storage:
+  Volume: 20630 # total storage volume
+  N_pipes: 25000  # Number of pipes in the storage module
+  Pipe:
+    length: 2.8  # Length of the pipe in meters
+    OD: 0.0445  # Diameter of the pipe in meters
+    wall_thickness: 0.0095  # Wall thickness of the pipe in meters
+    roughness: 3e-5  # Roughness of the pipe in meters
+    th_ins: 0.0 #insulation thickness
+  num_ax_segments: 6  # Number of axial segments in the storage module
+  num_rad_segments: 5  # Number of radial segments in the storage module
+  Block:
+    initial_temp: 2173  # Initial temperature distribution in the block (example values)
+    inner_radius: 0.03  # Inner radius of the block in meters
+    #outer_radius: 0.316  # Outer radius of the block in meters
+    length: 2.8  # Length of the block in meters
+  Bypass:
+    range: [0.01, 0.99] # Allowable bypass ratio range
+
+# Power Conversion Block Parameters
+power_conversion:
+  axial_steps: 4  # Number of axial discretization steps
+  N_cells: 1000  # Number of powerstick/emitter assemblies
+  height_pipe: 0.01  # Height of the rectangular pipe in meters
+  width_emitter: 0.25  # Width of the emitter in meters
+  length: 3.0  # Length of the components in meters
+  roughness_pipe: 3e-5  # Roughness of the pipe in meters
+  width_powerstick: 0.1  # Width of the power stick in meters
+  wall_thickness: 0.01  # Thickness of the graphite wall in meters
+  cooling_temp: 313  # Cooling temperature to maintain the power stick in Kelvin
+  panel_efficiency: 0.5  # Panel conversion efficiency above bandgap
+  f_bare: 0.25 # powerstick area fraction not covered by SNGC
+  f_active: 0.85 # electrical generation area fraction of SNGC-covered area
+  emissivity_table:  # List of tuples containing wavelength ranges and corresponding emissivities
+    - [[0.0, 1.0], 0.95, 0.05, 0.02]
+    - [[1.0, 1e4], 0.1, 0.05, 0.02]  # Example: [[wavelength range start, wavelength range end], emissivity]
+  max_inlet_temp: 2373 # Maximum allowable temperature into PCB
+
+# Pipe Parameters
+pipes:
+  - length: 10.0  # Length of the pipe in meters
+    OD: 0.5  # Diameter of the pipe in meters
+    wall_thickness: 0.005  # Wall thickness of the pipe in meters
+    roughness: 3e-5  # Roughness of the pipe in meters
+    th_ins: 0.25 # insulation thickness
+  - length: 10.0  # Length of the pipe in meters
+    OD: 0.5  # Diameter of the pipe in meters
+    wall_thickness: 0.005  # Wall thickness of the pipe in meters
+    roughness: 3e-5  # Roughness of the pipe in meters
+    th_ins: 0.25 # insulation thickness
+  - length: 10.0  # Length of the pipe in meters
+    OD: 0.5  # Diameter of the pipe in meters
+    wall_thickness: 0.005  # Wall thickness of the pipe in meters
+    roughness: 3e-5  # Roughness of the pipe in meters
+    th_ins: 0.25 # insulation thickness
+  - length: 10.0  # Length of the pipe in meters
+    OD: 0.5  # Diameter of the pipe in meters
+    wall_thickness: 0.005  # Wall thickness of the pipe in meters
+    roughness: 3e-5  # Roughness of the pipe in meters
+    th_ins: 0.25 # insulation thickness

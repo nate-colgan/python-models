@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Write(*)",
+      "Edit(*)",
+      "PowerShell(*)",
+      "PowerShell(ls -Path \"c:\\\\Users\\\\NateColgan\\\\Documents\\\\thermal modelling\" -File | Where-Object {$_.Extension -eq \".py\"})",
+      "PowerShell(New-Item -ItemType Directory -Path \"c:\\\\Users\\\\NateColgan\\\\Documents\\\\thermal modelling\\\\thermal\" -Force)",
+      "PowerShell(Get-Command py -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-Command python -ErrorAction SilentlyContinue)",
+      "PowerShell(& \"C:\\\\Users\\\\NateColgan\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\python.exe\" --version)",
+      "PowerShell($env:CONDA_EXE)",
+      "PowerShell($env:CONDA_PREFIX)",
+      "PowerShell(python --version 2>$null)",
+      "PowerShell(python --version)",
+      "Bash(python -c ' *)",
+      "Bash(python insert_heat_calc_cell.py)",
+      "Bash(powershell -Command ' *)",
+      "Bash(python)",
+      "Bash(python patch_shield_physics.py)",
+      "Bash(python patch_scratch_shield.py)",
+      "Bash(jq '.cells[] | select\\(.cell_type == \"code\" and \\(\\(.source | join\\(\"\"\\)\\) | test\\(\"TinlessSimulation|yaml\\\\\\\\.safe_load\"\\)\\)\\) | {id, source: \\(.source | join\\(\"\"\\)\\)}' \"tinless system model.ipynb\")",
+      "Read(//tmp/**)",
+      "Bash(python patch_tinless_sim.py)",
+      "Bash(python patch_wire_shield.py)",
+      "Bash(Out-File -Encoding utf8 \"C:\\\\Users\\\\NATECO~1\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-NateColgan-Documents-thermal-modelling\\\\c47ec152-e9e6-46d7-8142-ad36070a1585\\\\scratchpad\\\\cell_9494.txt\")",
+      "Bash(python patch_plain_method.py)",
+      "Bash(python3 -c ' *)"
+    ]
+  }
+}

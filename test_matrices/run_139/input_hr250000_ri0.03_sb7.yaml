@@ -1,0 +1,130 @@
+N_loops_step: 4
+N_stations: 8
+T_sur: 300
+bypass_bool: true
+emissivity_tables:
+- range:
+  - 0
+  - 35999
+  value:
+  - - - 0.1
+      - 1.0
+    - 0.001
+    - 0.05
+    - 0.02
+  - - - 1.0
+      - 20.0
+    - 0.001
+    - 0.05
+    - 0.02
+end_time: 36000
+flow_rates:
+- range:
+  - 0
+  - 35999
+  value: !!python/object/apply:numpy.core.multiarray.scalar
+  - !!python/object/apply:numpy.dtype
+    args:
+    - f8
+    - false
+    - true
+    state: !!python/tuple
+    - 3
+    - <
+    - null
+    - null
+    - null
+    - -1
+    - -1
+    - 0
+  - !!binary |
+    AAAAAACAQUA=
+heat_inputs:
+- range:
+  - 0
+  - 35999
+  value: 250000
+heat_loss_bool: false
+heater:
+  N_pipes: 6
+  Pipe:
+    OD: 0.0445
+    length: 1.0
+    roughness: 3e-5
+    th_ins: 0.0
+    wall_thickness: 0.0095
+  heat_input: 1e5
+initial_fluids:
+  flow_rate: 1
+  pressure: 1e6
+  temperature: 2173
+pipes:
+- OD: 0.05
+  length: 1.0
+  roughness: 3e-5
+  th_ins: 0.25
+  wall_thickness: 0.005
+- OD: 0.05
+  length: 1.0
+  roughness: 3e-5
+  th_ins: 0.25
+  wall_thickness: 0.005
+- OD: 0.05
+  length: 1.0
+  roughness: 3e-5
+  th_ins: 0.25
+  wall_thickness: 0.005
+- OD: 0.05
+  length: 1.0
+  roughness: 3e-5
+  th_ins: 0.25
+  wall_thickness: 0.005
+power_conversion:
+  N_cells: 1
+  axial_steps: 4
+  cooling_temp: 313
+  emissivity_table:
+  - - - 0.0
+      - 1.0
+    - 0.95
+    - 0.05
+    - 0.02
+  - - - 1.0
+      - 1e4
+    - 0.1
+    - 0.05
+    - 0.02
+  f_active: 0.85
+  f_bare: 0.25
+  height_pipe: 0.01
+  length: 3
+  max_inlet_temp: 2523
+  panel_efficiency: 0.5
+  roughness_pipe: 3e-5
+  wall_thickness: 0.01
+  width_emitter: 0.25
+  width_powerstick: 0.1
+pump:
+  efficiency: 0.85
+simple_heater_bool: false
+storage:
+  Block:
+    initial_temp: 2173
+    inner_radius: 0.03
+    length: 2.8
+  Bypass:
+    range:
+    - 0.01
+    - 0.99
+  N_pipes: 7
+  Pipe:
+    OD: 0.0445
+    length: 2.8
+    roughness: 3e-5
+    th_ins: 0.0
+    wall_thickness: 0.0095
+  Volume: 4.126
+  num_ax_segments: 6
+  num_rad_segments: 5
+time_steps: 36000
+vary_flowrate_bool: true

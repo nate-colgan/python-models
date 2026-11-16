@@ -1,0 +1,49 @@
+
+# Tinless System Model — Simulation Input
+# Graphite storage block radiating directly to a central powerstick (no tin piping)
+
+# ── General Simulation Parameters ─────────────────────────────────────────────
+end_time: 180000          # total simulation time [s]  (50 hr discharge)
+dt: 60                    # time step [s]
+sub_steps: 5              # FD sub-steps per time step (stability)
+T_sur: 300                # surroundings temperature [K]  (outer-wall radiation sink)
+block_heat_loss_bool: False  # account for outer-wall radiative heat loss
+liner_bool: False         # True = tungsten liner emissivity, False = bare graphite
+print_outputs_bool: True
+
+# ── Emissivity Table ──────────────────────────────────────────────────────────
+# Format: [[wl_min, wl_max], emis_active, emis_bare, emis_inactive]  (wavelengths in microns)
+# Use range format to allow time-varying tables (e.g. panels offline during charging)
+emissivity_tables:
+  - range: [0, 179999]
+    value:
+      - [[0.1, 1.24], 0.95, 0.05, 0.2]   # below bandgap
+      - [[1.24, 20.0], 0.05, 0.05, 0.2]  # above bandgap
+
+# ── Storage Block ─────────────────────────────────────────────────────────────
+storage:
+  # Sizing from energy requirements
+  avg_power: 2.4e5         # average power to extract [W]
+  duration_hr: 50          # discharge duration [hr]  =>  E = avg_power * duration_hr * 3600
+  T_min: 2173              # minimum (empty) block temperature [K]
+  block_temp_range: 500    # operating temperature swing [K]  (T_max = T_min + block_temp_range)
+
+  # Geometry  (inner radius derived from powerstick; outer radius derived from volume + L)
+  L: 3.0                   # axial length [m]
+  th_ins: 0.0              # outer-wall insulation thickness [m]
+
+  # Grid
+  num_ax_segments: 10
+  num_rad_segments: 10
+
+# ── Powerstick ────────────────────────────────────────────────────────────────
+powerstick:
+  side_len: 0.05           # square cross-section side length [m]
+                           # effective cylinder radius = 2*side_len/pi (equal surface area)
+  area_ratio: 10           # D_in / D_ps_eff  (sets inner graphite radius and view factor)
+  cooling_temp: 323        # powerstick cooling temperature [K]
+  panel_efficiency: 0.7    # fraction of below-bandgap absorbed power converted to electricity
+  f_bare: 0.2              # fraction of powerstick area with no PV cell
+  f_active: 0.85           # fraction of non-bare area that is active PV
+  bandgap: 1.24            # PV bandgap wavelength [microns]
+  

@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(python add_docstrings.py)",
+      "Bash(python rejig_sweep.py)",
+      "Bash(python add_heating_sim.py)",
+      "Bash(python fix_yaml_cell.py)",
+      "Bash(python insert_heating_cell.py)",
+      "Bash(python insert_heat_plot_cell.py)",
+      "Bash(python fix_heat_sim_cell.py)",
+      "Bash(python insert_heat_bisection_cell.py)",
+      "Bash(python patch_liner_model.py)",
+      "Bash(python patch_liner_tracking.py)",
+      "Bash(python patch_heat_liner.py)",
+      "Bash(powershell -Command ' *)",
+      "Bash(python3)",
+      "Bash(python patch_parametric_sweep.py)",
+      "Bash(python patch_tmin_refactor.py)",
+      "Bash(python patch_combined_plot.py)",
+      "Bash(python patch_try_except.py)",
+      "Bash(python3 -c ' *)",
+      "Bash(python patch_min_power.py)",
+      "Bash(python patch_plot_try_except.py)"
+    ]
+  }
+}

@@ -1,0 +1,227 @@
+color: b
+data_streams:
+  Electricity_integral: !!python/object/apply:numpy.core.multiarray._reconstruct
+    args:
+    - &id001 !!python/name:numpy.ndarray ''
+    - !!python/tuple
+      - 0
+    - !!binary |
+      Yg==
+    state: !!python/tuple
+    - 1
+    - !!python/tuple
+      - 10
+    - &id002 !!python/object/apply:numpy.dtype
+      args:
+      - f8
+      - false
+      - true
+      state: !!python/tuple
+      - 3
+      - <
+      - null
+      - null
+      - null
+      - -1
+      - -1
+      - 0
+    - false
+    - !!binary |
+      RFAN2aWygT8UB0NuuhwYQDvjxCZTGkxAMtTTjWa7XEADHZFP1LZlQIqM29mdE21AoCFLHoo+ckBx
+      2Mip2hp2QNRGpT6zRnpA9QrckMXyfkA=
+  Q_storage: !!python/object/apply:numpy.core.multiarray._reconstruct
+    args:
+    - *id001
+    - !!python/tuple
+      - 0
+    - !!binary |
+      Yg==
+    state: !!python/tuple
+    - 1
+    - !!python/tuple
+      - 10
+    - *id002
+    - false
+    - !!binary |
+      sZaOemHweUBcg0alRc2DQNEwFsHX1kJARHiwyQOuR8D4JQESasIsQMsIZxhkOl1AMyS10xrid0BW
+      Cx5gtlhgQKSIfoM0jovAuHqZmP42msA=
+  Q_storage_integral: !!python/object/apply:numpy.core.multiarray._reconstruct
+    args:
+    - *id001
+    - !!python/tuple
+      - 0
+    - !!binary |
+      Yg==
+    state: !!python/tuple
+    - 1
+    - !!python/tuple
+      - 10
+    - *id002
+    - false
+    - !!binary |
+      lpLKXU77Mj+qe51dB+7JP2wvVk8v0eY/sCa/g7HQ5j+7meDjE9vmP4A63kqK6eY/+hQFDdAF5z/p
+      DzchRALnP3y5Ru0dfOY/iRD5hYJ+5j8=
+  Q_tin: !!python/object/apply:numpy.core.multiarray._reconstruct
+    args:
+    - *id001
+    - !!python/tuple
+      - 0
+    - !!binary |
+      Yg==
+    state: !!python/tuple
+    - 1
+    - !!python/tuple
+      - 10
+    - *id002
+    - false
+    - !!binary |
+      p2SxHRNDdUAE0CiQZ3heQDKyLOWJh0LAbmtnra/9R0BH/kzX9ngrwNm7uMDZ/VzAp/DYQeuyd8Aq
+      n34oDwVfwAfiwIaELIxA2l3TGqfjmkA=
+  average_storage_temp: !!python/object/apply:numpy.core.multiarray._reconstruct
+    args:
+    - *id001
+    - !!python/tuple
+      - 0
+    - !!binary |
+      Yg==
+    state: !!python/tuple
+    - 1
+    - !!python/tuple
+      - 10
+    - *id002
+    - false
+    - !!binary |
+      ZmZmZmavnUCw3LLHtLyfQEcN8igUyKJAgm5JVKfLokBqc5TDEsqiQGM9Ih5mx6JAcLc2WqzAokCj
+      5BpMvNuiQOSEoZE0IKNAUqfUyAR2o0A=
+  heater_power: !!python/object/apply:numpy.core.multiarray._reconstruct
+    args:
+    - *id001
+    - !!python/tuple
+      - 0
+    - !!binary |
+      Yg==
+    state: !!python/tuple
+    - 1
+    - !!python/tuple
+      - 10
+    - *id002
+    - false
+    - !!binary |
+      AAAAAABwh0AAAAAAAHCHQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+      AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+  heater_temp: !!python/object/apply:numpy.core.multiarray._reconstruct
+    args:
+    - *id001
+    - !!python/tuple
+      - 0
+    - !!binary |
+      Yg==
+    state: !!python/tuple
+    - 1
+    - !!python/tuple
+      - 10
+    - *id002
+    - false
+    - !!binary |
+      ZmZmZmYSccBmZmZmZhJxwGZmZmZmEnHAZmZmZmYSccBmZmZmZhJxwGZmZmZmEnHAZmZmZmYSccBm
+      ZmZmZhJxwGZmZmZmEnHAZmZmZmYSccA=
+  innermost_radial_last_axial_temp: !!python/object/apply:numpy.core.multiarray._reconstruct
+    args:
+    - *id001
+    - !!python/tuple
+      - 0
+    - !!binary |
+      Yg==
+    state: !!python/tuple
+    - 1
+    - !!python/tuple
+      - 10
+    - *id002
+    - false
+    - !!binary |
+      ZmZmZmavnUA6KaD8fyigQPXGioGCw6JAPjWrYR/ZokA1lyYLifGiQIRvrT7NzKJAFarCKh3PoUDG
+      WMQpV9GgQNB9mH24yKJAY8qjmDz8pUA=
+  pipe_heat_loss: !!python/object/apply:numpy.core.multiarray._reconstruct
+    args:
+    - *id001
+    - !!python/tuple
+      - 0
+    - !!binary |
+      Yg==
+    state: !!python/tuple
+    - 1
+    - !!python/tuple
+      - 10
+    - *id002
+    - false
+    - !!binary |
+      AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+      AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+  power_generated: !!python/object/apply:numpy.core.multiarray._reconstruct
+    args:
+    - *id001
+    - !!python/tuple
+      - 0
+    - !!binary |
+      Yg==
+    state: !!python/tuple
+    - 1
+    - !!python/tuple
+      - 10
+    - *id002
+    - false
+    - !!binary |
+      kbqHgQi+ST8ivNv1UKdYP4E7Phd/l2s/vzbdn0LHaz8mdo66U6FrPxy0LvkTYms/mQBfHbPZaj8x
+      qt9YS1FtPw76nx2fFHI/cuDB25jpdj8=
+  pump_power: !!python/object/apply:numpy.core.multiarray._reconstruct
+    args:
+    - *id001
+    - !!python/tuple
+      - 0
+    - !!binary |
+      Yg==
+    state: !!python/tuple
+    - 1
+    - !!python/tuple
+      - 10
+    - *id002
+    - false
+    - !!binary |
+      AAAAAAAAAACLlo3ktGuVQCLBiIj2wZZAYMtsIqW9lkDS7MI9f7+WQBF06d3VwpZAYXLUTCvOlkDN
+      xHjSrOeWQEza7Hu2BJdAWdDqRqNEl0A=
+  time: !!python/object/apply:numpy.core.multiarray._reconstruct
+    args:
+    - *id001
+    - !!python/tuple
+      - 0
+    - !!binary |
+      Yg==
+    state: !!python/tuple
+    - 1
+    - !!python/tuple
+      - 10
+    - *id002
+    - false
+    - !!binary |
+      s8PU5fYHaT/sUbgehevzP0REREREhBhA0GkDnTbwJUB+seQXS54vQJb8YskvpjRA0id90id9OUAi
+      IiIiIlI+QJqZmZmZkUFAVHaYutz2Q0A=
+  waste_heat: !!python/object/apply:numpy.core.multiarray._reconstruct
+    args:
+    - *id001
+    - !!python/tuple
+      - 0
+    - !!binary |
+      Yg==
+    state: !!python/tuple
+    - 1
+    - !!python/tuple
+      - 10
+    - *id002
+    - false
+    - !!binary |
+      AhrYHd6M2D9MM9vL3UXhP7jegKyRJus/L9ft4eRB6z+JquqsMizrP8T7huHvB+s/lu7A0GG56j8S
+      VgiyEiHsP04MrCki1+8/QpD/EL5c8j8=
+label: HR=750000, PL=3, SB=32, BP=False, FR=35.0
+line_style: ':'
+shape: ^
+size: 8

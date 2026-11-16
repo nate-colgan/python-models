@@ -1,0 +1,165 @@
+
+# Simulation Input Template
+
+# General Simulation Parameters
+time_steps: 108000  # Number of time steps for the simulation
+end_time: 108000 # total simulation time
+T_sur: 300 #Surroundings temperature
+heat_loss_bool: False
+simple_heater_bool: True
+
+# Time-based input definitions
+#inputs:
+#  - time: 0
+#    flowrate: 25
+#    emissivity_table:
+#      - [[0.0, 1.0], 0.001]
+#      - [[1.0, 10000.0], 0.001]
+#    storage_bypass_fractions: 0.2
+#    power_conversion_bypass_fractions: 0.2
+#    heat_input: 1e5
+#  - time: 54
+#    flowrate: 1
+#    emissivity_table:
+#      - [[0.0, 1.0], 0.95]
+#      - [[1.0, 10000.0], 0.1]
+#    storage_bypass_fractions: 0.2
+#    power_conversion_bypass_fractions: 0.2
+#    heat_input: 1
+
+# Input Definitions
+heat_inputs:
+  #- range: [0, 107999]
+  #  value: 2.5e5  # Heat input in Watts for time steps 0 to 49
+  - range: [0, 10799]
+    value: 1  # Heat input in Watts for time steps 0 to 49
+flow_rates:
+  #- range: [0, 107999]
+  #  value: 5  # Flow rate in kg/s for all time steps
+  - range: [0, 107999]
+    value: 10
+emissivity_tables:
+  #- range: [0, 10799]
+  #  value: 
+  #    - [[0.1, 1.0], 0.001]  # Below 1 micron
+  #    - [[1.0, 20.0], 0.001]  # Above 1 micron
+  - range: [0, 107999]
+    value: 
+      - [[0.1, 1.0], 0.95]  # Below 1 micron
+      - [[1.0, 20.0], 0.1]  # Above 1 micron
+
+power_conversion_bypass_fractions:
+  - range: [0, 107999]
+    value: 0.3  # Fraction of flow rate bypassing the power conversion block
+
+
+# Fluid Initial Conditions
+initial_fluids:
+  # List of Fluid objects containing the initial conditions at each location
+  pump_outlet:
+    temperature: 2723  # Temperature in Kelvin
+    pressure: 1e6  # Pressure in Pascals
+    flow_rate: 0  # Flow rate in kg/s
+  heater_inlet:
+    temperature: 2723  # Temperature in Kelvin
+    pressure: 1e6  # Pressure in Pascals
+    flow_rate: 0  # Flow rate in kg/s
+  heater_outlet:
+    temperature: 2723  # Temperature in Kelvin
+    pressure: 1e6  # Pressure in Pascals
+    flow_rate: 0  # Flow rate in kg/s
+  storage_inlet:
+    temperature: 2723  # Temperature in Kelvin
+    pressure: 1e6  # Pressure in Pascals
+    flow_rate: 0  # Flow rate in kg/s
+  storage_outlet:
+    temperature: 2723  # Temperature in Kelvin
+    pressure: 1e6  # Pressure in Pascals
+    flow_rate: 0  # Flow rate in kg/s
+  power_conversion_inlet:
+    temperature: 2723  # Temperature in Kelvin
+    pressure: 1e6  # Pressure in Pascals
+    flow_rate: 0  # Flow rate in kg/s
+  power_conversion_outlet:
+    temperature: 2723  # Temperature in Kelvin
+    pressure: 1e6  # Pressure in Pascals
+    flow_rate: 0  # Flow rate in kg/s
+  pump_inlet:
+    temperature: 2723  # Temperature in Kelvin
+    pressure: 1e6  # Pressure in Pascals
+    flow_rate: 0  # Flow rate in kg/s
+
+# Pump Parameters
+pump:
+  efficiency: 0.85  # Pump efficiency
+
+# Heater Parameters
+heater:
+  heat_input: 1e5 # heat input [W]
+  N_pipes: 10  # Number of pipes in the heater
+  Pipe:
+    length: 2.0  # Length of the pipe in meters
+    OD: 0.0445  # Diameter of the pipe in meters
+    wall_thickness: 0.0095  # Wall thickness of the pipe in meters
+    roughness: 3e-5  # Roughness of the pipe in meters
+    th_ins: 0.0 #insulation thickness
+
+# Storage Module Parameters
+storage:
+  Volume: 8.0 # total storage volume
+  N_pipes: 8  # Number of pipes in the storage module
+  Pipe:
+    length: 1.55  # Length of the pipe in meters
+    OD: 0.0445  # Diameter of the pipe in meters
+    wall_thickness: 0.0095  # Wall thickness of the pipe in meters
+    roughness: 3e-5  # Roughness of the pipe in meters
+    th_ins: 0.0 #insulation thickness
+  num_ax_segments: 6  # Number of axial segments in the storage module
+  num_rad_segments: 5  # Number of radial segments in the storage module
+  Block:
+    initial_temp: 2723  # Initial temperature distribution in the block (example values)
+    inner_radius: 0.05  # Inner radius of the block in meters
+    #outer_radius: 0.316  # Outer radius of the block in meters
+    length: 1.55  # Length of the block in meters
+  Bypass:
+    range: [0.01, 0.99] # Allowable bypass ratio range
+
+# Power Conversion Block Parameters
+power_conversion:
+  axial_steps: 10  # Number of axial discretization steps
+  N_cells: 1  # Number of powerstick/emitter assemblies
+  height_pipe: 0.01  # Height of the rectangular pipe in meters
+  width_emitter: 0.25  # Width of the emitter in meters
+  length: 3.0  # Length of the components in meters
+  roughness_pipe: 3e-5  # Roughness of the pipe in meters
+  width_powerstick: 0.1  # Width of the power stick in meters
+  wall_thickness: 0.01  # Thickness of the graphite wall in meters
+  cooling_temp: 313  # Cooling temperature to maintain the power stick in Kelvin
+  panel_efficiency: 0.5  # Panel conversion efficiency above bandgap
+  emissivity_table:  # List of tuples containing wavelength ranges and corresponding emissivities
+    - [[0.0, 1.0], 0.95]
+    - [[1.0, 1e4], 0.1]  # Example: [[wavelength range start, wavelength range end], emissivity]
+  max_inlet_temp: 2373 # Maximum allowable temperature into PCB
+
+# Pipe Parameters
+pipes:
+  - length: 1.0  # Length of the pipe in meters
+    OD: 0.05  # Diameter of the pipe in meters
+    wall_thickness: 0.005  # Wall thickness of the pipe in meters
+    roughness: 3e-5  # Roughness of the pipe in meters
+    th_ins: 0.25 # insulation thickness
+  - length: 1.0  # Length of the pipe in meters
+    OD: 0.05  # Diameter of the pipe in meters
+    wall_thickness: 0.005  # Wall thickness of the pipe in meters
+    roughness: 3e-5  # Roughness of the pipe in meters
+    th_ins: 0.25 # insulation thickness
+  - length: 1.0  # Length of the pipe in meters
+    OD: 0.05  # Diameter of the pipe in meters
+    wall_thickness: 0.005  # Wall thickness of the pipe in meters
+    roughness: 3e-5  # Roughness of the pipe in meters
+    th_ins: 0.25 # insulation thickness
+  - length: 1.0  # Length of the pipe in meters
+    OD: 0.05  # Diameter of the pipe in meters
+    wall_thickness: 0.005  # Wall thickness of the pipe in meters
+    roughness: 3e-5  # Roughness of the pipe in meters
+    th_ins: 0.25 # insulation thickness
