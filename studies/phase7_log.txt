@@ -1,0 +1,67 @@
+Baseline: L 3 m, block_height 10 m, pad True (0.025 m); groups ['confirm', 'height', 'pad']
+[discharge] T_avg=1872 K reached cutoff 1873 K at t=45.5000 hr (163800.0 s) — powerstick removed, conduction-only phase begins.
+[confirm] detailed: t_end 45.50 h, E_elec 4840 kWh, hold 12.83 h, P_avg 106.4 / peak 224.6 kW, spread 131 K, q_cap 2.80  [42 s]
+[discharge] T_avg=1871 K reached cutoff 1873 K at t=45.3333 hr (163200.0 s) — powerstick removed, conduction-only phase begins.
+[confirm] screening: t_end 45.33 h, E_elec 4862 kWh, hold 13.00 h, P_avg 107.3 / peak 226.3 kW, spread 124 K, q_cap 2.76  [9 s]
+[discharge] T_avg=1868 K reached cutoff 1873 K at t=53.6667 hr (193200.0 s) — powerstick removed, conduction-only phase begins.
+Block fully charged: T_avg=2674.5 K >= 2673 K at t=26.33 hr
+[height] H=3 shaded: t_end 53.67 h, E_elec 4842 kWh, hold 30.00 h, P_avg 90.2 / peak 140.4 kW, spread 1 K, q_cap nan, charge 26.33 h  [2 s]
+[discharge] T_avg=1868 K reached cutoff 1873 K at t=36.3333 hr (130800.0 s) — powerstick removed, conduction-only phase begins.
+[height] H=3 unshaded: t_end 36.33 h, E_elec 4877 kWh, hold 0.00 h, P_avg 134.2 / peak 489.1 kW, spread 3 K, q_cap nan  [0 s]
+[discharge] T_avg=1868 K reached cutoff 1873 K at t=49.3333 hr (177600.0 s) — powerstick removed, conduction-only phase begins.
+Block fully charged: T_avg=2677.9 K >= 2673 K at t=26.67 hr
+[height] H=4.5 shaded: t_end 49.33 h, E_elec 4865 kWh, hold 22.33 h, P_avg 98.6 / peak 176.7 kW, spread 34 K, q_cap 2.28, charge 26.67 h  [4 s]
+[discharge] T_avg=1871 K reached cutoff 1873 K at t=31.6667 hr (114000.0 s) — powerstick removed, conduction-only phase begins.
+[height] H=4.5 unshaded: t_end 31.67 h, E_elec 4841 kWh, hold 0.00 h, P_avg 152.9 / peak 489.9 kW, spread 35 K, q_cap 4.47  [0 s]
+[discharge] T_avg=1871 K reached cutoff 1873 K at t=46.6667 hr (168000.0 s) — powerstick removed, conduction-only phase begins.
+Block fully charged: T_avg=2675.9 K >= 2673 K at t=26.67 hr
+[height] H=6 shaded: t_end 46.67 h, E_elec 4859 kWh, hold 17.67 h, P_avg 104.1 / peak 200.3 kW, spread 61 K, q_cap 2.51, charge 26.67 h  [5 s]
+[discharge] T_avg=1871 K reached cutoff 1873 K at t=30.3333 hr (109200.0 s) — powerstick removed, conduction-only phase begins.
+[height] H=6 unshaded: t_end 30.33 h, E_elec 4822 kWh, hold 0.00 h, P_avg 159.0 / peak 489.9 kW, spread 57 K, q_cap 4.47  [0 s]
+[discharge] T_avg=1871 K reached cutoff 1873 K at t=45.3333 hr (163200.0 s) — powerstick removed, conduction-only phase begins.
+Block fully charged: T_avg=2674.9 K >= 2673 K at t=26.67 hr
+[height] H=10 shaded: t_end 45.33 h, E_elec 4862 kWh, hold 13.00 h, P_avg 107.3 / peak 226.3 kW, spread 124 K, q_cap 2.76, charge 26.67 h  [11 s]
+[discharge] T_avg=1871 K reached cutoff 1873 K at t=30.3333 hr (109200.0 s) — powerstick removed, conduction-only phase begins.
+[height] H=10 unshaded: t_end 30.33 h, E_elec 4811 kWh, hold 0.00 h, P_avg 158.6 / peak 489.9 kW, spread 108 K, q_cap 4.47  [0 s]
+[discharge] T_avg=1868 K reached cutoff 1873 K at t=45.6667 hr (164400.0 s) — powerstick removed, conduction-only phase begins.
+[pad] H=6 rgf=0mm: t_end 45.67 h, E_elec 4698 kWh, hold 18.00 h, P_avg 102.9 / peak 196.4 kW, spread 59 K, q_cap 2.80  [6 s]
+[discharge] T_avg=1870 K reached cutoff 1873 K at t=46.6667 hr (168000.0 s) — powerstick removed, conduction-only phase begins.
+[pad] H=6 rgf=12.5mm: t_end 46.67 h, E_elec 4854 kWh, hold 17.67 h, P_avg 104.0 / peak 200.2 kW, spread 61 K, q_cap 2.52  [4 s]
+[discharge] T_avg=1871 K reached cutoff 1873 K at t=46.6667 hr (168000.0 s) — powerstick removed, conduction-only phase begins.
+[pad] H=6 rgf=25mm: t_end 46.67 h, E_elec 4859 kWh, hold 17.67 h, P_avg 104.1 / peak 200.3 kW, spread 61 K, q_cap 2.51  [4 s]
+[discharge] T_avg=1872 K reached cutoff 1873 K at t=46.6667 hr (168000.0 s) — powerstick removed, conduction-only phase begins.
+[pad] H=6 rgf=50mm: t_end 46.67 h, E_elec 4861 kWh, hold 17.67 h, P_avg 104.2 / peak 200.3 kW, spread 61 K, q_cap 2.50  [4 s]
+[discharge] T_avg=1872 K reached cutoff 1873 K at t=43.6667 hr (157200.0 s) — powerstick removed, conduction-only phase begins.
+[pad] H=10 rgf=0mm: t_end 43.67 h, E_elec 4648 kWh, hold 12.67 h, P_avg 106.4 / peak 222.3 kW, spread 124 K, q_cap 3.14  [12 s]
+[discharge] T_avg=1870 K reached cutoff 1873 K at t=45.3333 hr (163200.0 s) — powerstick removed, conduction-only phase begins.
+[pad] H=10 rgf=12.5mm: t_end 45.33 h, E_elec 4857 kWh, hold 13.00 h, P_avg 107.1 / peak 226.1 kW, spread 124 K, q_cap 2.77  [10 s]
+[discharge] T_avg=1871 K reached cutoff 1873 K at t=45.3333 hr (163200.0 s) — powerstick removed, conduction-only phase begins.
+[pad] H=10 rgf=25mm: t_end 45.33 h, E_elec 4862 kWh, hold 13.00 h, P_avg 107.3 / peak 226.3 kW, spread 124 K, q_cap 2.76  [11 s]
+[discharge] T_avg=1872 K reached cutoff 1873 K at t=45.3333 hr (163200.0 s) — powerstick removed, conduction-only phase begins.
+[pad] H=10 rgf=50mm: t_end 45.33 h, E_elec 4864 kWh, hold 13.00 h, P_avg 107.3 / peak 226.3 kW, spread 124 K, q_cap 2.75  [10 s]
+
+== confirm (vs phase-6 nax=60: t_end_h 46, E_elec_kWh 4.83e+03, hold_h 12.9, P_peak_kW 224, low_share 0.674, spread_max_K 136, q_cap_peak 2.84)
+detailed   nax  30  t_end_h -1.1%  E_elec_kWh +0.1%  hold_h -0.08  P_peak_kW +0.2%  low_share +0.0%  spread_max_K -4.76  q_cap_peak -1.6%  [42 s]
+screening  nax  20  t_end_h -1.4%  E_elec_kWh +0.6%  hold_h +0.08  P_peak_kW +0.9%  low_share -0.1%  spread_max_K -11.89  q_cap_peak -3.0%  [9 s]
+
+== height
+case                   disch h    hold h    over h     P avg    P peak  E_el kWh  eff cell   eff blk    spread   low shr  vrad kWh vcond kWh  qcap avg   qcap pk  T_LB min  T_LB max  charge h     run s
+H=3 shaded               53.67     30.00      8.33      90.2     140.4      4842     0.464     0.452         1     0.000         -         -         -         -         -         -     26.33         2
+H=3 unshaded             36.33      0.00     21.00     134.2     489.1      4877     0.456     0.446         3     0.000         -         -         -         -         -         -         -         0
+H=4.5 shaded             49.33     22.33     15.00      98.6     176.7      4865     0.465     0.453        34     0.324      3465        19      1.63      2.28      1815      2120     26.67         4
+H=4.5 unshaded           31.67      0.00     21.00     152.9     489.9      4841     0.453     0.443        35     0.324      3527        22      2.15      4.47      1817      2507         -         0
+H=6 shaded               46.67     17.67     17.67     104.1     200.3      4859     0.465     0.453        61     0.483      5158        23      1.70      2.51      1821      2171     26.67         5
+H=6 unshaded             30.33      0.00     20.33     159.0     489.9      4822     0.451     0.441        57     0.485      5282        24      2.21      4.47      1823      2507         -         0
+H=10 shaded              45.33     13.00     18.33     107.3     226.3      4862     0.464     0.452       124     0.674      7218        24      1.76      2.76      1803      2222     26.67        11
+H=10 unshaded            30.33      0.00     19.67     158.6     489.9      4811     0.449     0.440       108     0.678      7392        19      2.23      4.47      1820      2507         -         0
+
+== pad
+case                   disch h    hold h    over h     P avg    P peak  E_el kWh  eff cell   eff blk    spread   low shr  vrad kWh vcond kWh  qcap avg   qcap pk  T_LB min  T_LB max  charge h     run s
+H=6 rgf=0mm              45.67     18.00     16.33     102.9     196.4      4698     0.465     0.436        59     0.484      4788        22      1.85      2.80      1853      2241         -         6
+H=6 rgf=12.5mm           46.67     17.67     17.67     104.0     200.2      4854     0.465     0.452        61     0.483      5144        23      1.71      2.52      1822      2174         -         4
+H=6 rgf=25mm             46.67     17.67     17.67     104.1     200.3      4859     0.465     0.453        61     0.483      5158        23      1.70      2.51      1821      2171         -         4
+H=6 rgf=50mm             46.67     17.67     17.67     104.2     200.3      4861     0.465     0.454        61     0.483      5165        23      1.70      2.50      1820      2169         -         4
+H=10 rgf=0mm             43.67     12.67     17.67     106.4     222.3      4648     0.465     0.432       124     0.674      6747        22      1.95      3.14      1843      2307         -        12
+H=10 rgf=12.5mm          45.33     13.00     18.33     107.1     226.1      4857     0.464     0.451       124     0.674      7203        24      1.77      2.77      1805      2226         -        10
+H=10 rgf=25mm            45.33     13.00     18.33     107.3     226.3      4862     0.464     0.452       124     0.674      7218        24      1.76      2.76      1803      2222         -        11
+H=10 rgf=50mm            45.33     13.00     18.33     107.3     226.3      4864     0.464     0.453       124     0.674      7224        24      1.76      2.75      1803      2220         -        10

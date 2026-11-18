@@ -126,6 +126,33 @@ class TinlessSimulation:
             self.VF_shade_lin = None
             self.A_shade_seg  = None
 
+    def _spectral_grid(self, emissivity_table):
+        """Gauss-Legendre nodes/weights in log-wavelength, per emissivity-table band.
+
+        Band edges (incl. the bandgap) are never straddled, so the piecewise-constant
+        panel emissivities are integrated exactly and the smooth Planck / TaC
+        spectra converge spectrally fast. Default 10 nodes per band (2 bands -> 20
+        nodes) is exact to ~1e-6 relative vs. a 20,000-bin reference.
+
+        Returns (wavelengths [µm], weights [m]) so that  ∫ f(λ) dλ ≈ Σ f(λ_i) w_i.
+        Cached per (table, n_per_band).
+        """
+        m = int(getattr(self, 'n_gauss_per_band', 10))
+        key = (tuple(tuple(r[0]) for r in emissivity_table), m)
+        cache = getattr(self, '_grid_cache', None)
+        if cache is not None and cache[0] == key:
+            return cache[1], cache[2]
+        x, wt = np.polynomial.legendre.leggauss(m)
+        wl, w = [], []
+        for (lo, hi), *_ in emissivity_table:
+            la, lb = np.log(lo), np.log(hi)
+            lam = np.exp(0.5 * (lb - la) * x + 0.5 * (lb + la))      # µm
+            wl.append(lam)
+            w.append(wt * 0.5 * (lb - la) * lam * 1e-6)              # dλ = λ dlnλ  [m]
+        wl, w = np.concatenate(wl), np.concatenate(w)
+        self._grid_cache = (key, wl, w)
+        return wl, w
+
     def spectral_net_radiation(self, T_hot, f_shade=0.0):
         h   = 6.62607015e-34
         c   = 2.99792458e8
@@ -148,19 +175,23 @@ class TinlessSimulation:
         wavelength_min = emissivity_table[0][0][0]
         wavelength_max = emissivity_table[-1][0][1]
         band_gap       = emissivity_table[0][0][1]
-        n_bins = 300
 
-        wavelengths   = np.logspace(np.log10(wavelength_min), np.log10(wavelength_max), n_bins)
+        if getattr(self, 'spectral_quadrature', 'gauss') == 'gauss':
+            wavelengths, bw = self._spectral_grid(emissivity_table)
+        else:
+            # Legacy uniform-log grid (kept for comparison only): bin edges are not
+            # aligned to the emissivity-band edges, giving ~2% error in Q_cell.
+            n_bins = getattr(self, 'n_bins', 300)
+            wavelengths = np.logspace(np.log10(wavelength_min), np.log10(wavelength_max), n_bins)
+            _wm = wavelengths * 1e-6
+            bw_fwd = np.concatenate([_wm[1:] - _wm[:-1], [_wm[-1] - _wm[-2]]])
+            bw_bwd = np.concatenate([[_wm[1] - _wm[0]], _wm[1:] - _wm[:-1]])
+            bw = np.where(wavelengths < band_gap, bw_fwd, bw_bwd)
+        n_bins        = wavelengths.size
         wavelengths_m = wavelengths * 1e-6
 
         def _B(T):
             return np.pi * (2*h*c**2) / wavelengths_m**5 / np.expm1(h*c / (wavelengths_m * k_B * T))
-
-        bw_fwd = np.concatenate([wavelengths_m[1:] - wavelengths_m[:-1],
-                                 [wavelengths_m[-1] - wavelengths_m[-2]]])
-        bw_bwd = np.concatenate([[wavelengths_m[1] - wavelengths_m[0]],
-                                 wavelengths_m[1:] - wavelengths_m[:-1]])
-        bw = np.where(wavelengths < band_gap, bw_fwd, bw_bwd)
 
         avg_ps_emis      = np.zeros(n_bins)
         active_frac_per_wl = np.zeros(n_bins)
@@ -339,6 +370,10 @@ class TinlessSimulation:
     def _step_calc(self, T_dist, f_shade=0.0):
         ps         = self.powerstick
         n_ax       = self.storage.num_ax_segments
+        if n_ax != ps.num_ax_steps:
+            raise NotImplementedError(
+                "local per-segment radiation needs one block ring per powerstick step "
+                "(block_height == L); taller blocks need the axial enclosure model")
         band_gap   = ps.emissivity_table[0][0][1]
         A_cell_cm2 = ps.A_step * (1 - ps.f_bare) * ps.f_active * 1e4
         Q_rad       = np.zeros(n_ax)
@@ -391,6 +426,48 @@ class TinlessSimulation:
         return brentq(lambda fs: _flux(fs) - self.nominal_cell_flux,
                       f_lo, f_hi, xtol=1e-4, maxiter=30)
 
+    def _radiation_step(self, T_dist, use_shade):
+        """f_shade search + radiation for one step. Local per-segment model, or the
+        full-height enclosure model when build_tinless attached sim.axial_model."""
+        ax = getattr(self, 'axial_model', None)
+        if ax is not None:
+            return ax.step(T_dist, control=use_shade)
+        f_shade = self._compute_f_shade(T_dist) if use_shade else 0.0
+        return f_shade, self._step_calc(T_dist, f_shade=f_shade)
+
+    def _axial_diag(self, T, Q_rad, active):
+        """Per-step diagnostics for the decoupled-height model (brief §5):
+        Q_rad_low   heat leaving the lower-zone block rings [W]
+        Q_vert_rad  net upward radiative transfer across the liner-bottom plane [W]
+                    (dict split: outer gap / inner space / through the shade, porous model)
+        Q_vert_cond net upward block conduction across that plane [W]
+        T_wall_spread  block inner-wall max - min [K]"""
+        from .properties import storage_tcx
+        st = self.storage
+        out = dict(T_wall_spread=float(T[:, 0].max() - T[:, 0].min()), Q_rad_low=np.nan,
+                   Q_vert_rad=np.nan, Q_vert_cond=np.nan, Q_vert_rad_outer=np.nan,
+                   Q_vert_rad_inner=np.nan, Q_vert_rad_through=np.nan)
+        ax = getattr(self, 'axial_model', None)
+        n_low = getattr(ax, 'n_low', 0) if ax is not None else 0
+        if ax is None or not n_low:
+            return out
+        out['Q_rad_low'] = float(np.sum(Q_rad[:n_low]))
+        dz = st.axial_dz()
+        dz_c = 0.5 * (dz[n_low - 1] + dz[n_low])
+        nR = st.num_rad_segments
+        r_lo = st.block.rad_in + np.arange(nR) * (st.block.rad_out - st.block.rad_in) / nR
+        r_hi = r_lo + (st.block.rad_out - st.block.rad_in) / nR
+        Tl, Tu = T[n_low - 1], T[n_low]
+        k = np.asarray(storage_tcx(0.5 * (Tl + Tu)), float) * np.ones(nR)
+        out['Q_vert_cond'] = float(np.sum(k * np.pi * (r_hi ** 2 - r_lo ** 2) * (Tl - Tu) / dz_c))
+        if active and getattr(ax, 'last', None) is not None and hasattr(ax, 'vertical_transport'):
+            vt = ax.vertical_transport()
+            out['Q_vert_rad'] = float(sum(vt.values()))
+            for kk in ('outer', 'inner', 'through'):
+                if kk in vt:
+                    out[f'Q_vert_rad_{kk}'] = float(vt[kk])
+        return out
+
     def _dep_T_emitter(self, T_inner_mean, T_liner_mean, T_foil_inner_mean):
         """Pick the correct emitter temperature for deposition based on configuration.
 
@@ -408,15 +485,20 @@ class TinlessSimulation:
     def run_simulation(self, end_time, dt_short, dt_medium, dt_long, sub_steps,
                        dt_short_duration=3600, snap_every=None, print_interval=0,
                        deposition_fn=None, deposition_kwargs=None, T_ps_cutoff=None,
-                       stop_at_cutoff=False):
+                       stop_at_cutoff=False, dt_at_shade_limit=None, Q_sink_fn=None):
+        """dt_at_shade_limit: time step while the shade sits at its most-closed limit
+        (f_shade == f_shade_max); default None -> dt_short (original rule).
+        Q_sink_fn: optional f(T_dist) -> heat [W] removed per ring (nA,) at the outer
+        node, or per node (nA, nR); e.g. thermal.tank.CellLossSink (roof / floor
+        insulation losses on the top / bottom rings). Default None = adiabatic.
+        The applied total is recorded as 'Q_sink' [W]."""
         storage  = self.storage
         n_ax     = storage.num_ax_segments
         _use_shade = self.shade_bool and self.nominal_cell_flux is not None
         _dep_kw = deposition_kwargs or {}
 
         T = storage.block.temp_dist
-        f_shade = self._compute_f_shade(T) if _use_shade else 0.0
-        Q0, Q_elec0, Q_cell0, _, T_liner0 = self._step_calc(T, f_shade=f_shade)
+        f_shade, (Q0, Q_elec0, Q_cell0, _, T_liner0) = self._radiation_step(T, _use_shade)
 
         _st0 = self._step_temps
         time_arr        = [0.0]
@@ -432,7 +514,24 @@ class TinlessSimulation:
         T_sh_in_arr       = [np.nanmean(_st0['T_sh_in'])]
         T_sh_out_arr      = [np.nanmean(_st0['T_sh_out'])]
         f_shade_arr    = [f_shade]
+        _lim = lambda k: float((getattr(getattr(self, 'axial_model', None), 'last', None) or {}).get(k, np.nan))
+        # axial-model extras recorded per step (NaN when not provided / stick removed):
+        # vane limits [W]; liner bottom (Phase 4): heat through pad [W], T_R / T_LB [K],
+        # bottom-cap absorbed power [W] and flux [W/cm2], liner bottom -> stick sides [W]
+        _AX_KEYS = ('Q_cell_min', 'Q_cell_max', 'Q_pad', 'T_R', 'T_LB', 'Q_cap', 'q_cap', 'Q_LB_cells',
+                    'vane_angle')      # approximate vane angle [deg] (vane model)
+        ax_rec = {k: [_lim(k)] for k in _AX_KEYS}
+        _dg0 = self._axial_diag(T, Q0, True)
+        diag_rec = {k: [v] for k, v in _dg0.items()}
+        _lo_key = 'T_liner_out'
+        liner_out_snaps = [np.array(_st0[_lo_key], float).copy()]
+        _n_lo = liner_out_snaps[0].size
+
+        def _lo_snap(st):
+            a = np.array(st[_lo_key], float)
+            return a.copy() if a.size == _n_lo else np.full(_n_lo, np.nan)
         ps_active_arr  = [True]
+        Q_sink_arr     = [0.0 if Q_sink_fn is None else float(np.sum(Q_sink_fn(T)))]
         snap_times   = [0.0]
         temp_snaps   = [T.copy()]
 
@@ -456,15 +555,16 @@ class TinlessSimulation:
             T = storage.block.temp_dist
 
             if _ps_active:
-                f_shade = self._compute_f_shade(T) if _use_shade else 0.0
-                if t < dt_short_duration or (self.shade_bool and f_shade == self.f_shade_max):
+                f_shade, (Q_rad, Q_elec, Q_cell, Q_waste, T_liner) = self._radiation_step(T, _use_shade)
+                if t < dt_short_duration:
                     dt = dt_short
+                elif self.shade_bool and f_shade == self.f_shade_max:
+                    dt = dt_short if dt_at_shade_limit is None else dt_at_shade_limit
                 elif self.shade_bool and f_shade > self.f_shade_min:
                     dt = dt_medium
                 else:
                     dt = dt_long
                 dt = min(dt, end_time - t)
-                Q_rad, Q_elec, Q_cell, Q_waste, T_liner = self._step_calc(T, f_shade=f_shade)
                 _st = self._step_temps
             else:
                 # Conduction-only phase: powerstick removed, no radiation exchange.
@@ -478,9 +578,16 @@ class TinlessSimulation:
                 _st     = {k: np.full(n_ax, np.nan)
                            for k in ('T_liner_out', 'T_foil_inner', 'T_sh_in', 'T_sh_out')}
 
-            T_new, _, _ = storage.update_temps(
-                T, -Q_rad, dt, sub_steps, self.T_sur, self.block_heat_loss
-            )
+            _ax = getattr(self, 'axial_model', None)
+            _Qs = None if Q_sink_fn is None else np.asarray(Q_sink_fn(T), float)
+            if _ax is not None and _ps_active:
+                T_new, _, _ = storage.update_temps(
+                    T, -Q_rad, dt, sub_steps, self.T_sur, self.block_heat_loss,
+                    dQ_dTw=-_ax.last['dQ_dTw'], Q_out=_Qs)
+            else:
+                T_new, _, _ = storage.update_temps(
+                    T, -Q_rad, dt, sub_steps, self.T_sur, self.block_heat_loss, Q_out=_Qs
+                )
             storage.block.temp_dist = T_new
             t += dt
 
@@ -495,6 +602,7 @@ class TinlessSimulation:
                     break
 
             time_arr.append(t)
+            Q_sink_arr.append(0.0 if _Qs is None else float(_Qs.sum()))
             Q_arr.append(Q_rad.sum())
             Q_cell_arr.append(Q_cell.sum())
             Q_elec_arr.append(Q_elec.sum())
@@ -507,6 +615,12 @@ class TinlessSimulation:
             T_sh_in_arr.append(np.nanmean(_st['T_sh_in']))
             T_sh_out_arr.append(np.nanmean(_st['T_sh_out']))
             f_shade_arr.append(f_shade)
+            _on = _ps_active or t_ps_removed == t
+            for k in _AX_KEYS:
+                ax_rec[k].append(_lim(k) if _on else np.nan)
+            _dg = self._axial_diag(T, Q_rad, _on)
+            for k in diag_rec:
+                diag_rec[k].append(_dg[k])
             ps_active_arr.append(_ps_active)
 
             if deposition_fn is not None:
@@ -525,6 +639,7 @@ class TinlessSimulation:
             if snap_every and t >= next_snap:
                 snap_times.append(t)
                 temp_snaps.append(T_new.copy())
+                liner_out_snaps.append(_lo_snap(_st))
                 next_snap += snap_every
 
             if print_interval and (t - last_print_t >= print_interval):
@@ -537,6 +652,7 @@ class TinlessSimulation:
         if snap_times[-1] != t:
             snap_times.append(t)
             temp_snaps.append(storage.block.temp_dist.copy())
+            liner_out_snaps.append(_lo_snap(self._step_temps) if _ps_active else np.full(_n_lo, np.nan))
 
         _S_PER_YR = 3.154e7
         if dep_rate_arr:
@@ -561,7 +677,11 @@ class TinlessSimulation:
             'T_sh_in':        np.array(T_sh_in_arr),
             'T_sh_out':       np.array(T_sh_out_arr),
             'f_shade':        np.array(f_shade_arr),
+            **{k: np.array(v) for k, v in ax_rec.items()},   # axial-model extras (see _AX_KEYS)
+            **{k: np.array(v) for k, v in diag_rec.items()},  # see _axial_diag
+            'liner_out_snaps': np.array(liner_out_snaps),      # liner outer-face T per active ring at snap_times
             'ps_active':      np.array(ps_active_arr),
+            'Q_sink':         np.array(Q_sink_arr),
             't_ps_removed':   t_ps_removed,
             'snap_times':     np.array(snap_times),
             'temp_snapshots': np.array(temp_snaps),
@@ -572,7 +692,7 @@ class TinlessSimulation:
         }
 
     def run_heating_simulation(self, heater, T_block_max, end_time, dt, sub_steps,
-                               snap_every=None, print_interval=0):
+                               snap_every=None, print_interval=0, Q_sink_fn=None):
         """
         Transient charging simulation with a central resistive heating element.
 
@@ -581,7 +701,12 @@ class TinlessSimulation:
         enclosure; the resulting per-segment heat flux is passed to
         StorageModule.update_temps as a positive source at the inner wall.
 
-        Stops when T_avg >= T_block_max or after int(end_time/dt) steps.
+        Stops when the volume-weighted T_avg >= T_block_max or after int(end_time/dt)
+        steps. T_avg, T_inner and T_outer are volume- / height-weighted.
+
+        Q_sink_fn: optional f(T_dist) -> heat [W] removed per ring (nA,) or per node
+        (nA, nR), held over each step (e.g. tank.CellLossSink: roof / floor losses).
+        The applied total is recorded as 'Q_sink' [W].
 
         Returns dict with keys:
           'time', 'Q_heater', 'T_heater', 'T_avg', 'T_inner', 'T_outer',
@@ -590,9 +715,10 @@ class TinlessSimulation:
         sigma   = 5.67036713e-8
         storage = self.storage
         r_in    = storage.block.rad_in
-        L_blk   = storage.block.length
         n_ax    = storage.num_ax_segments
-        seg_len = L_blk / n_ax
+        # Heater spans the full block height; per-ring area follows ring height
+        # (non-uniform when the block is taller than the powerstick).
+        seg_len = storage.axial_dz()
 
         A_h_seg  = np.pi * heater.diameter * seg_len
         A_gr_seg = np.pi * 2.0 * r_in * seg_len
@@ -603,8 +729,8 @@ class TinlessSimulation:
             for i in range(n_ax):
                 eps_gr   = gr_emis(T_inner_arr[i])
                 R_enc    = ((1.0 - eps_h) / eps_h + 1.0
-                            + (A_h_seg / A_gr_seg) * (1.0 - eps_gr) / eps_gr)
-                Q_seg[i] = sigma * (T_h**4 - T_inner_arr[i]**4) * A_h_seg / R_enc
+                            + (A_h_seg[i] / A_gr_seg[i]) * (1.0 - eps_gr) / eps_gr)
+                Q_seg[i] = sigma * (T_h**4 - T_inner_arr[i]**4) * A_h_seg[i] / R_enc
             return Q_seg
 
         def _total_q(T_h, T_inner_arr):
@@ -629,14 +755,26 @@ class TinlessSimulation:
                 T_h = heater.max_temperature
             return T_h, _q_segs(T_h, T_inner_arr)
 
+        # Rings facing the liner: the top num_ax_steps rings (bottom-up indexing;
+        # equals all rings when block height == powerstick length).
+        _act = range(n_ax - self.powerstick.num_ax_steps, n_ax)
+
         def _liner_avg(T_d):
             if not self.powerstick.liner_bool:
                 return 0.0
-            tl = np.zeros(n_ax)
-            for i in range(n_ax):
+            tl = np.zeros(len(_act))
+            for n, i in enumerate(_act):
                 _, tli, _ = self.spectral_net_radiation(float(T_d[i, 0]))
-                tl[i] = tli
+                tl[n] = tli
             return float(tl.mean())
+
+        # volume weights (radial rings x ring heights) for the block average
+        _nR = storage.num_rad_segments
+        _r = r_in + np.arange(_nR + 1) * (storage.block.rad_out - r_in) / _nR
+        _W = np.diff(_r ** 2)[None, :] * seg_len[:, None]
+        _W = _W / _W.sum()
+        _wz = seg_len / seg_len.sum()
+        _Tavg = lambda T_d: float((T_d * _W).sum())
 
         T        = storage.block.temp_dist.copy()
         T_h_0, _ = _solve_T_heater(T[:, 0])
@@ -647,18 +785,21 @@ class TinlessSimulation:
         time_list    = [0.0]
         Q_list       = [0.0]
         T_h_list     = [T_h_0]
-        T_avg_list   = [float(T.mean())]
-        T_inner_list = [float(T[:, 0].mean())]
-        T_outer_list = [float(T[:, -1].mean())]
+        T_avg_list   = [_Tavg(T)]
+        T_inner_list = [float(T[:, 0] @ _wz)]
+        T_outer_list = [float(T[:, -1] @ _wz)]
         T_liner_list = [_liner_avg(T)]
+        Q_sink_list  = [0.0 if Q_sink_fn is None else float(np.sum(Q_sink_fn(T)))]
         snap_times   = [0.0]
         temp_snaps   = [T.copy()]
 
         for step in range(n_steps):
             T_h, Q_segs = _solve_T_heater(T[:, 0])
+            _Qs = None if Q_sink_fn is None else np.asarray(Q_sink_fn(T), float)
             T_new, _, _ = storage.update_temps(
-                T, Q_segs, dt, sub_steps, self.T_sur, self.block_heat_loss,
+                T, Q_segs, dt, sub_steps, self.T_sur, self.block_heat_loss, Q_out=_Qs,
             )
+            Q_sink_list.append(0.0 if _Qs is None else float(_Qs.sum()))
             storage.block.temp_dist = T_new
             T = T_new
 
@@ -667,9 +808,9 @@ class TinlessSimulation:
             time_list.append(t)
             Q_list.append(float(Q_segs.sum()))
             T_h_list.append(T_h)
-            T_avg_list.append(float(T_new.mean()))
-            T_inner_list.append(float(T_new[:, 0].mean()))
-            T_outer_list.append(float(T_new[:, -1].mean()))
+            T_avg_list.append(_Tavg(T_new))
+            T_inner_list.append(float(T_new[:, 0] @ _wz))
+            T_outer_list.append(float(T_new[:, -1] @ _wz))
             T_liner_list.append(_liner_avg(T_new))
 
             if idx % snap_steps == 0:
@@ -679,13 +820,13 @@ class TinlessSimulation:
             if print_interval and (idx % print_interval == 0):
                 phase = 1 if T_h < heater.max_temperature - 1.0 else 2
                 print(
-                    f"t={t/3600:.2f} hr  T_inner={T_new[:, 0].mean():.0f} K  "
-                    f"T_avg={T_new.mean():.0f} K  T_liner={T_liner_list[-1]:.0f} K  "
+                    f"t={t/3600:.2f} hr  T_inner={T_inner_list[-1]:.0f} K  "
+                    f"T_avg={T_avg_list[-1]:.0f} K  T_liner={T_liner_list[-1]:.0f} K  "
                     f"T_heater={T_h:.0f} K  Q={Q_segs.sum()/1e3:.1f} kW  [phase {phase}]"
                 )
 
-            if T_new.mean() >= T_block_max:
-                print(f"Block fully charged: T_avg={T_new.mean():.1f} K >= {T_block_max} K "
+            if T_avg_list[-1] >= T_block_max:
+                print(f"Block fully charged: T_avg={T_avg_list[-1]:.1f} K >= {T_block_max} K "
                       f"at t={t/3600:.2f} hr")
                 break
 
@@ -701,6 +842,7 @@ class TinlessSimulation:
             'T_inner':        np.array(T_inner_list),
             'T_outer':        np.array(T_outer_list),
             'T_liner':        np.array(T_liner_list),
+            'Q_sink':         np.array(Q_sink_list),
             'snap_times':     np.array(snap_times),
             'temp_snapshots': np.array(temp_snaps),
         }

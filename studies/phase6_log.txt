@@ -1,0 +1,73 @@
+Baseline YAML: L 3 m, block_height 10 m, num_ax 30, num_rad 10, shade vanes, pad True; groups ['radial', 'dtlim', 'dt', 'rays', 'axial']
+[discharge] T_avg=1872 K reached cutoff 1873 K at t=45.5000 hr (163800.0 s) — powerstick removed, conduction-only phase begins.
+[radial] nrad=5: t_end 45.500 h, E_elec 4825.5 kWh, hold 13.00 h, over 18.17 h, P_peak 224.6 kW, low share 0.675, spread max 130.8 K, q_cap peak 2.80  [120 s, 339 steps]
+[discharge] T_avg=1870 K reached cutoff 1873 K at t=45.8333 hr (165000.0 s) — powerstick removed, conduction-only phase begins.
+[radial] nrad=10: t_end 45.833 h, E_elec 4834.6 kWh, hold 13.00 h, over 18.17 h, P_peak 224.6 kW, low share 0.675, spread max 130.7 K, q_cap peak 2.80  [80 s, 340 steps]
+[discharge] T_avg=1871 K reached cutoff 1873 K at t=45.8333 hr (165000.0 s) — powerstick removed, conduction-only phase begins.
+[radial] nrad=20: t_end 45.833 h, E_elec 4830.2 kWh, hold 13.00 h, over 18.17 h, P_peak 224.6 kW, low share 0.675, spread max 130.5 K, q_cap peak 2.80  [74 s, 340 steps]
+[discharge] T_avg=1871 K reached cutoff 1873 K at t=45.8333 hr (165000.0 s) — powerstick removed, conduction-only phase begins.
+[radial] nrad=40: t_end 45.833 h, E_elec 4828.1 kWh, hold 13.08 h, over 18.08 h, P_peak 224.6 kW, low share 0.675, spread max 130.5 K, q_cap peak 2.80  [82 s, 340 steps]
+[discharge] T_avg=1870 K reached cutoff 1873 K at t=45.8333 hr (165000.0 s) — powerstick removed, conduction-only phase begins.
+[dtlim] dt_at_limit=short: t_end 45.833 h, E_elec 4834.6 kWh, hold 13.00 h, over 18.17 h, P_peak 224.6 kW, low share 0.675, spread max 130.7 K, q_cap peak 2.80  [70 s, 340 steps]
+[discharge] T_avg=1870 K reached cutoff 1873 K at t=45.8333 hr (165000.0 s) — powerstick removed, conduction-only phase begins.
+[dtlim] dt_at_limit=medium: t_end 45.833 h, E_elec 4839.1 kWh, hold 13.00 h, over 18.17 h, P_peak 224.6 kW, low share 0.675, spread max 130.7 K, q_cap peak 2.80  [48 s, 237 steps]
+[discharge] T_avg=1870 K reached cutoff 1873 K at t=45.8333 hr (165000.0 s) — powerstick removed, conduction-only phase begins.
+[dtlim] dt_at_limit=long: t_end 45.833 h, E_elec 4848.3 kWh, hold 12.83 h, over 18.33 h, P_peak 224.6 kW, low share 0.675, spread max 130.7 K, q_cap peak 2.80  [37 s, 185 steps]
+[discharge] T_avg=1871 K reached cutoff 1873 K at t=45.8333 hr (165000.0 s) — powerstick removed, conduction-only phase begins.
+[dt] dt x2.0: t_end 45.833 h, E_elec 4832.8 kWh, hold 13.67 h, over 18.17 h, P_peak 224.6 kW, low share 0.673, spread max 130.3 K, q_cap peak 2.80  [34 s, 170 steps]
+[discharge] T_avg=1870 K reached cutoff 1873 K at t=45.8333 hr (165000.0 s) — powerstick removed, conduction-only phase begins.
+[dt] dt x1.0: t_end 45.833 h, E_elec 4834.6 kWh, hold 13.00 h, over 18.17 h, P_peak 224.6 kW, low share 0.675, spread max 130.7 K, q_cap peak 2.80  [72 s, 340 steps]
+[discharge] T_avg=1872 K reached cutoff 1873 K at t=45.5833 hr (164100.0 s) — powerstick removed, conduction-only phase begins.
+[dt] dt x0.5: t_end 45.583 h, E_elec 4822.5 kWh, hold 12.96 h, over 18.12 h, P_peak 224.6 kW, low share 0.676, spread max 130.8 K, q_cap peak 2.80  [137 s, 678 steps]
+[discharge] T_avg=1873 K reached cutoff 1873 K at t=45.5208 hr (163875.0 s) — powerstick removed, conduction-only phase begins.
+[dt] dt x0.25: t_end 45.521 h, E_elec 4819.6 kWh, hold 12.92 h, over 18.10 h, P_peak 224.6 kW, low share 0.676, spread max 130.9 K, q_cap peak 2.80  [292 s, 1354 steps]
+[discharge] T_avg=1873 K reached cutoff 1873 K at t=45.5000 hr (163800.0 s) — powerstick removed, conduction-only phase begins.
+[rays] rays=2^12: t_end 45.500 h, E_elec 4819.2 kWh, hold 13.00 h, over 18.17 h, P_peak 224.9 kW, low share 0.675, spread max 130.2 K, q_cap peak 2.80  [85 s, 339 steps]
+[discharge] T_avg=1870 K reached cutoff 1873 K at t=45.8333 hr (165000.0 s) — powerstick removed, conduction-only phase begins.
+[rays] rays=2^14: t_end 45.833 h, E_elec 4834.6 kWh, hold 13.00 h, over 18.17 h, P_peak 224.6 kW, low share 0.675, spread max 130.7 K, q_cap peak 2.80  [88 s, 340 steps]
+[discharge] T_avg=1870 K reached cutoff 1873 K at t=45.8333 hr (165000.0 s) — powerstick removed, conduction-only phase begins.
+[rays] rays=2^16: t_end 45.833 h, E_elec 4835.1 kWh, hold 13.00 h, over 18.17 h, P_peak 224.8 kW, low share 0.675, spread max 130.8 K, q_cap peak 2.80  [86 s, 340 steps]
+[discharge] T_avg=1872 K reached cutoff 1873 K at t=44.3333 hr (159600.0 s) — powerstick removed, conduction-only phase begins.
+[axial] nax=10: t_end 44.333 h, E_elec 4828.9 kWh, hold 12.83 h, over 18.50 h, P_peak 231.6 kW, low share 0.681, spread max 100.5 K, q_cap peak 2.69  [20 s, 338 steps]
+[discharge] T_avg=1873 K reached cutoff 1873 K at t=45.2500 hr (162900.0 s) — powerstick removed, conduction-only phase begins.
+[axial] nax=20: t_end 45.250 h, E_elec 4819.6 kWh, hold 13.00 h, over 18.25 h, P_peak 225.7 kW, low share 0.676, spread max 124.1 K, q_cap peak 2.76  [43 s, 339 steps]
+[discharge] T_avg=1870 K reached cutoff 1873 K at t=45.8333 hr (165000.0 s) — powerstick removed, conduction-only phase begins.
+[axial] nax=30: t_end 45.833 h, E_elec 4834.6 kWh, hold 13.00 h, over 18.17 h, P_peak 224.6 kW, low share 0.675, spread max 130.7 K, q_cap peak 2.80  [85 s, 340 steps]
+[discharge] T_avg=1872 K reached cutoff 1873 K at t=45.6667 hr (164400.0 s) — powerstick removed, conduction-only phase begins.
+[axial] nax=45: t_end 45.667 h, E_elec 4819.7 kWh, hold 12.92 h, over 18.08 h, P_peak 224.5 kW, low share 0.674, spread max 134.4 K, q_cap peak 2.83  [164 s, 339 steps]
+[discharge] T_avg=1870 K reached cutoff 1873 K at t=46.0000 hr (165600.0 s) — powerstick removed, conduction-only phase begins.
+[axial] nax=60: t_end 46.000 h, E_elec 4833.8 kWh, hold 12.92 h, over 18.08 h, P_peak 224.2 kW, low share 0.674, spread max 135.6 K, q_cap peak 2.84  [296 s, 340 steps]
+
+== radial  (relative change vs nrad=40)
+case                   t_end_h    E_elec_kWh        hold_h        over_h     P_peak_kW     low_share  spread_max_K    q_cap_peak   run s
+nrad=5             45.50 (-0.7%) 4825.50 (-0.1%)    13.00 (-0.08)    18.17 (+0.08)  224.59 (+0.0%)    0.67 (-0.0%)   130.83 (+0.34)    2.80 (+0.0%)     120
+nrad=10            45.83 (+0.0%) 4834.55 (+0.1%)    13.00 (-0.08)    18.17 (+0.08)  224.59 (+0.0%)    0.67 (-0.0%)   130.65 (+0.17)    2.80 (+0.0%)      80
+nrad=20            45.83 (+0.0%) 4830.19 (+0.0%)    13.00 (-0.08)    18.17 (+0.08)  224.59 (+0.0%)    0.68 (+0.0%)   130.54 (+0.06)    2.80 (+0.0%)      74
+nrad=40            45.83 (+0.0%) 4828.08 (+0.0%)    13.08 (+0.00)    18.08 (+0.00)  224.59 (+0.0%)    0.67 (+0.0%)   130.48 (+0.00)    2.80 (+0.0%)      82
+
+== dtlim  (relative change vs dt_at_limit=long)
+case                   t_end_h    E_elec_kWh        hold_h        over_h     P_peak_kW     low_share  spread_max_K    q_cap_peak   run s
+dt_at_limit=short   45.83 (+0.0%) 4834.55 (-0.3%)    13.00 (+0.17)    18.17 (-0.17)  224.59 (+0.0%)    0.67 (+0.0%)   130.65 (+0.00)    2.80 (+0.0%)      70
+dt_at_limit=medium   45.83 (+0.0%) 4839.10 (-0.2%)    13.00 (+0.17)    18.17 (-0.17)  224.59 (+0.0%)    0.67 (+0.0%)   130.65 (+0.00)    2.80 (+0.0%)      48
+dt_at_limit=long   45.83 (+0.0%) 4848.26 (+0.0%)    12.83 (+0.00)    18.33 (+0.00)  224.59 (+0.0%)    0.67 (+0.0%)   130.65 (+0.00)    2.80 (+0.0%)      37
+
+== dt  (relative change vs dt x0.25)
+case                   t_end_h    E_elec_kWh        hold_h        over_h     P_peak_kW     low_share  spread_max_K    q_cap_peak   run s
+dt x2.0            45.83 (+0.7%) 4832.85 (+0.3%)    13.67 (+0.75)    18.17 (+0.06)  224.59 (+0.0%)    0.67 (-0.4%)   130.32 (-0.57)    2.80 (+0.0%)      34
+dt x1.0            45.83 (+0.7%) 4834.55 (+0.3%)    13.00 (+0.08)    18.17 (+0.06)  224.59 (+0.0%)    0.67 (-0.2%)   130.65 (-0.25)    2.80 (+0.0%)      72
+dt x0.5            45.58 (+0.1%) 4822.50 (+0.1%)    12.96 (+0.04)    18.12 (+0.02)  224.59 (+0.0%)    0.68 (-0.1%)   130.81 (-0.08)    2.80 (+0.0%)     137
+dt x0.25           45.52 (+0.0%) 4819.55 (+0.0%)    12.92 (+0.00)    18.10 (+0.00)  224.59 (+0.0%)    0.68 (+0.0%)   130.90 (+0.00)    2.80 (+0.0%)     292
+
+== rays  (relative change vs rays=2^16)
+case                   t_end_h    E_elec_kWh        hold_h        over_h     P_peak_kW     low_share  spread_max_K    q_cap_peak   run s
+rays=2^12          45.50 (-0.7%) 4819.24 (-0.3%)    13.00 (+0.00)    18.17 (+0.00)  224.93 (+0.1%)    0.67 (-0.0%)   130.20 (-0.61)    2.80 (+0.0%)      85
+rays=2^14          45.83 (+0.0%) 4834.55 (-0.0%)    13.00 (+0.00)    18.17 (+0.00)  224.59 (-0.1%)    0.67 (-0.0%)   130.65 (-0.16)    2.80 (-0.1%)      88
+rays=2^16          45.83 (+0.0%) 4835.10 (+0.0%)    13.00 (+0.00)    18.17 (+0.00)  224.82 (+0.0%)    0.68 (+0.0%)   130.81 (+0.00)    2.80 (+0.0%)      86
+
+== axial  (relative change vs nax=60)
+case                   t_end_h    E_elec_kWh        hold_h        over_h     P_peak_kW     low_share  spread_max_K    q_cap_peak   run s
+nax=10             44.33 (-3.6%) 4828.92 (-0.1%)    12.83 (-0.08)    18.50 (+0.42)  231.60 (+3.3%)    0.68 (+1.0%)   100.53 (-35.06)    2.69 (-5.5%)      20
+nax=20             45.25 (-1.6%) 4819.60 (-0.3%)    13.00 (+0.08)    18.25 (+0.17)  225.69 (+0.7%)    0.68 (+0.3%)   124.11 (-11.47)    2.76 (-2.9%)      43
+nax=30             45.83 (-0.4%) 4834.55 (+0.0%)    13.00 (+0.08)    18.17 (+0.08)  224.59 (+0.2%)    0.67 (+0.1%)   130.65 (-4.93)    2.80 (-1.6%)      85
+nax=45             45.67 (-0.7%) 4819.69 (-0.3%)    12.92 (+0.00)    18.08 (+0.00)  224.55 (+0.2%)    0.67 (+0.0%)   134.38 (-1.21)    2.83 (-0.4%)     164
+nax=60             46.00 (+0.0%) 4833.81 (+0.0%)    12.92 (+0.00)    18.08 (+0.00)  224.19 (+0.0%)    0.67 (+0.0%)   135.58 (+0.00)    2.84 (+0.0%)     296

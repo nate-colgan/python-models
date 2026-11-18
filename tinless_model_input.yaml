@@ -4,9 +4,9 @@
 
 # -- General Simulation Parameters --------------------------------------------
 end_time: 240000          # total simulation time [s]  (50 hr discharge)
-dt_short: 60              # timestep [s] — used for the first dt_short_duration seconds
-dt_medium: 600             # timestep [s] — used when shade is active and not clamped
-dt_long: 1200               # timestep [s] — used when shade is clamped at f_shade_max
+dt_short: 600              # timestep [s] — used for the first dt_short_duration seconds
+dt_medium: 900             # timestep [s] — used when shade is active and not clamped
+dt_long: 1800               # timestep [s] — used when shade is clamped at f_shade_max
 dt_short_duration: 3600    # seconds of real time to use dt_short at the start
 sub_steps: 5              # FD sub-steps per time step (stability)
 T_sur: 300                # surroundings temperature [K]
@@ -27,23 +27,24 @@ emissivity_tables:
 
 # -- Storage Block ------------------------------------------------------------
 storage:
-  avg_flux: 7.5            # average power density to extract [W/cm^2]
+  avg_flux: 12.5            # average power density to extract [W/cm^2]
   duration_hr: 50          # discharge duration [hr]
-  T_min: 1873              # minimum (empty) block temperature [K]
-  block_temp_range: 800    # operating temperature swing [K]
-  L: 8                   # axial length [m]
+  T_min: 2173              # minimum (empty) block temperature [K]
+  block_temp_range: 500    # operating temperature swing [K]
+  L: 3                   # axial length [m]
+  block_height: 10       # block + heater + shade height [m]; null -> L. Stick + liner (length L) hang top-aligned
   th_ins: 0.0              # outer-wall insulation thickness [m]
-  num_ax_segments: 3
-  num_rad_segments: 10
+  num_ax_segments: 20      # TOTAL block rings over block_height (split lower/active zone by height)
+  num_rad_segments: 5
 
 # -- Powerstick ---------------------------------------------------------------
 powerstick:
-  side_len: 0.26           # square cross-section side length [m]
-  area_ratio: 5            # D_in / D_ps_eff
+  side_len: 0.2           # square cross-section side length [m]
+  area_ratio: 10           # r_in / r_ps_eff. IGNORED when shade_bool: true (cavity = minimum that fits the shade around the liner)
   cooling_temp: 323        # powerstick cooling temperature [K]
   f_bare: 0.05
   f_active: .9
-  liner_side_len: 0.5     # square side length of liner [m]; r_liner = 2*side_len/pi
+  liner_side_len: 0.3     # square side length of liner [m]; r_liner = 2*side_len/pi
   liner_thickness: 0.005  # liner wall thickness [m]
   tungsten_foil: false   # add W foil between TaC face and powerstick
 
@@ -57,10 +58,37 @@ shade:
   liner_to_shade_perimeter_ratio: 1.707  # 1 + sqrt(2)/2; octagon with L = liner_side_len
   thickness: 0.0391          # shade wall thickness [m]
   surface_emissivity: 0.9         # emissivity of shade surfaces
-  num_conduction_layers: 5 # number of layers for 1-D conduction model through shade
+  num_conduction_layers: 1 # unused: shade conduction uses the exact integral of k(T) (axial model); legacy model uses 1 layer
   corner_gap: 0.003175     # gap between adjacent panel edges at fully-closed [m] (= 1/8 in)
   outer_foil: false          # true = W foil on shade outer face (adds radiative resistance)
+  model: vanes               # axial model only: vanes = 8 centre-pivoted vanes in a square cavity (closed/open
+                             #   limits ray-traced; setpoint held when between them) | porous = thin porous sheet
+  vane_clearance: 0.005      # [m] vanes: min clearance to liner/wall when open. Vane length = liner side +
+                             #   sqrt(2)*clearance; cavity side >= 4*vane length + 2*clearance (bore enlarged if needed)
   
+# -- Decoupled block height: liner bottom, cavity ends, axial radiation -------
+# Defaults below reproduce the original model (block_height = L, local per-segment
+# radiation, no liner-bottom model). See decoupled_block_height_brief.md.
+liner_bottom:
+  enabled: true            # true -> liner-bottom plate + RGF pad model, bottom-cap flux reported
+  rgf_thickness: 0.025      # RGF pad on external bottom of liner [m]
+  rgf_outer_emissivity: null   # pad underside emissivity; null -> shade.surface_emissivity
+  include_flux_to_cells_in_power: false  # LB -> lowest cell flux always reported; added to P only if true
+
+bottom_cap:
+  temperature: null         # [K]; null -> powerstick.cooling_temp. Emissivity = emis_bare (gas director)
+
+cavity_ends:                # floor + ceiling: thin graphite over Thermax, reradiating
+  emissivity: null          # null -> graphite emissivity gr_emis(T)
+  ceiling_gap: 0.01         # radial gap ceiling inner edge -> liner outer wall [m] (treated closed)
+
+radiation:
+  axial: true              # true -> full-height ring-to-ring enclosure (shade per shade.model); false -> local per segment
+  vf_method: analytic       # unshaded only: analytic (exact where possible) | montecarlo. Shaded cavity is always ray-traced
+  vf_rays: 65536            # rays/surface, Monte Carlo view factors (Sobol; ~1% worst-entry error, target 2%)
+  vane_rays: 16384          # rays/surface for the vane closed/open view factors (heat within ~0.02% of 2^18)
+  vf_cache_dir: .vf_cache   # cache traced view factors on disk (null = no cache)
+
 # -- Heater ------------------------------------------------------------------
 # Central cylindrical resistive heating element used during charging.
 # Phase 1: max_power supplied; T_heater rises as graphite warms.
@@ -68,7 +96,94 @@ shade:
 # Heating stops when block T_avg reaches T_min + block_temp_range.
 heater:
   side_len: 0.15            # m   (heater rod side length)
-  area_ratio: 8.75           # D_in / D_heater  (controls heater-to-inner-wall gap)
-  max_temperature: 2873     # K   (maximum heater surface temperature)
-  max_power: 400000         # W   (maximum electrical power input)
+  area_ratio: 2.8           # D_cavity / D_heater; heater cavity also sets the tank layout (tank.py)
+  max_temperature: 2773     # K   (maximum heater surface temperature)
+  max_power: 750000         # W   (maximum electrical power input)
   emissivity: 0.85           # gray-body emissivity of heater surface
+  charge_hr: 30           # target charge time [h] for the heater-cavity search; null -> end_time
+
+# -- System-scale steel tank (thermal/tank.py; steel_tank_system_brief.md) ----
+# Builds the plant around the per-stick results: checkerboard hot zone, API 650
+# tank, Thermax, graphite->oxide columns, finned floor, foundation, losses, capex.
+# Temperatures in C. Every cost is a PLACEHOLDER [low, central, high].
+tank:
+  P_rated: 25.0e+6           # W_e plant rating; N_ps = ceil(P_rated / P_stick), P_stick = discharge-average power
+  duration_hr: 50           # h; energy mismatch vs N_ps * E_stick_e is reported, not resized
+  T_amb: 15.0               # C annual mean (loss calc)
+  T_air_design: 40.0        # C design-day floor-air inlet (floor check)
+  t_side: 1.0               # m Thermax side wall
+  t_top: 1.5                # m Thermax roof
+  L_bot: 2.0                # m bottom stack (columns + Thermax)
+  H_wd: null                # m stick withdrawal headspace; null -> L + t_top (assumption)
+  H_deck: 2.0               # m deck / structure allowance
+  c_shell: 0.05             # m shell clearance
+  soil_allowable: 225.0e+3   # Pa
+  thermax: {rho: 640.0}     # kg/m3; k(T) in properties.thermax_tcx
+  columns:
+    thickness: 0.23         # m graphite column thickness (constant); the width varies with height
+    w_max: 0.513            # m largest graphite width (hot face). Pitch = sqrt(capacity / areal load),
+                            #   capacity = sigma_allow(T_max) * w_max * thickness (v3: 333 kN, 1.70 m)
+    w_min: 0.135            # m minimum graphite width (v3 column foot)
+    sigma_ref: 2.81e+6      # Pa creep allowable at T_ref: 1% strain / 30 yr, no extra factor (v3 column-creep slide)
+    T_ref: 2400.0           # C
+    n: 3.8                  # creep stress exponent
+    Q_kcal: 50.0            # kcal/mol creep activation energy
+    sigma_cap: 20.0e+6       # Pa allowable cap (strength fraction, ISO-68)
+    T1: 1200.0              # C graphite -> oxide joint (oxide max service T when L_graphite is set)
+    L_graphite: null        # m fixed graphite segment length (joint T then an output); null -> joint at T1
+    sigma_ox: 3.0e+6         # Pa oxide post allowable (pre-fired high-Al)
+    rho_graphite: 1850.0    # kg/m3 column graphite (ISO-68)
+    rho_oxide: 3000.0       # kg/m3
+    # f_3D: lateral (3-D) correction on 1-D column heat. 0.85 calibrated (calibrate_f3d) to
+    # the v3 FEA point: 774 kW over 982 m2, pitch 1.70 m, L_bot 2.0 m, 2400 C hot face,
+    # joint at T1 = 1100 C, floor pinned 85 C, Mersen graphite k(T), sigma_ref 2.81 MPa,
+    # 230 mm thick columns 498 -> 135 mm wide. 1-D columns 588 kW (1.73 kW each; the FEA
+    # column carries 1.2 kW at the top to 2.1 kW at the foot) + Thermax 276 kW.
+    # Only valid near the v3 column geometry.
+    f_3D: 0.85
+    plate_area: 0.36         # m2 bearing plate per column (floor hot-spot check)
+  floor:
+    plate_t: 0.020          # m steel floor plate
+    k_steel: 45.0           # W/m-K
+    fin_h: 0.14             # m fin height (underside)
+    fin_t: 0.010            # m fin thickness
+    fin_pitch: 0.14         # m
+    channel_clearance: 0.05 # m channel height = fin_h + this
+    v_air: 6.0              # m/s; single pass across the tank (L_flow = D_tank)
+    K_minor: 3.0            # minor-loss coefficient
+    eta_fan: 0.6
+    T_limit_normal: 93.0    # C API 650 base
+    T_limit_annexM: 200.0   # C API 650 Annex M
+  shell:
+    h_out: 10.0             # W/m2K shell / deck to ambient (plus radiation)
+    emissivity: 0.9         # shell and deck
+    h_headspace: 3.0        # W/m2K argon natural convection, roof insulation -> deck
+    emis_insulation: 0.9    # Thermax top face
+  costs:                    # [low, central, high], placeholders
+    steel_per_t: [5000, 7500, 10000]          # $/t field-erected (shell, bottom, roof)
+    t_shell: 0.011                            # m average shell
+    t_bottom: 0.008                           # m (+ annular ring fraction below)
+    bottom_annular_frac: 0.10
+    roof_kg_m2: 88.0                          # roof plate, ring girder, wind girders
+    deck_kg_m2: [80, 120, 160]                # deck trusses
+    deck_per_t: [5000, 6000, 8000]
+    gas_tight_fixed: [150000, 300000, 450000] # $ gas tightness, nozzles, gas holder
+    per_penetration: [750, 1500, 2250]        # $ per stick + heater penetration
+    thermax_per_kg: [1.5, 2.5, 4.0]
+    column_graphite_per_kg: [5, 10, 15]       # ISO-68 machined
+    oxide_per_kg: [1, 2, 4]
+    bearing_plate: [700, 900, 1100]           # $ per column
+    tie_grid: [700, 1500, 2300]               # $ per column
+    floor_per_m2: [720, 935, 1150]            # floor plate upgrade, fins, welds
+    slab_per_m2: [330, 470, 610]              # HT concrete, rails, firebrick caps
+    cellular_glass_per_m2: [110, 165, 220]
+    mat_per_m3: [870, 1300, 1800]             # structural mat
+    mat_thickness: 1.0                        # m
+    fans_per_m3s: [7500, 10000, 15000]        # fans, louvres, exhaust, controls per m3/s
+    storage_graphite_per_kg: [1.0, 1.0, 1.0]  # pass-through, reported separately
+  economics:
+    elec_price: 87.0        # $/MWh (cost of lost heat; not in capex)
+    heater_eff: 0.9
+  block_axial_losses: true  # roof + floor insulation losses act on every cell: applied as a sink on the top /
+                            #   bottom block rings in the stick discharge and heater charge runs (side + edge
+                            #   losses only reach perimeter cells: corrected post hoc)

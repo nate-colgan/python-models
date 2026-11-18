@@ -257,9 +257,7 @@ def storage_cp(temp):
     temp_C = np.array([300, 750, 1200, 1995])
     temp_C = np.append(temp_C, 2400)
     cp_arr = np.append(cp_arr, 2.13)
-    temp_C_interp = temp - 273.15
-    if temp_C_interp > 2400:
-        temp_C_interp = 2400
+    temp_C_interp = np.minimum(temp - 273.15, 2400)   # array-safe clamp
     return 2000
     #return np.interp(temp_C_interp, temp_C, cp_arr) * 1000
 
@@ -267,13 +265,27 @@ def storage_tcx(temp):
     #storage graphite conductivity
     temp_C = np.array([300, 750, 1200, 1995])
     conductivity = np.array([31.5, 28.7, 24.8, 23.1])
-    temp_C_interp = temp - 273.15
     temp_C = np.append(temp_C, 2400)
     conductivity = np.append(conductivity, conductivity[-1] + (conductivity[-1] - conductivity[-2]) / (temp_C[-2] - temp_C[-3]) * (temp_C[-1] - temp_C[-2]))
-    if temp_C_interp > 2400:
-        temp_C_interp = 2400
+    temp_C_interp = np.minimum(temp - 273.15, 2400)   # array-safe clamp
     return 20
     #return np.interp(temp_C_interp, temp_C, conductivity)
+
+# Thermax (640 kg/m3), measured: k = K0 * exp(B * T[C])  [W/m-K]
+THERMAX_K0 = 0.04916
+THERMAX_B = 0.0011
+
+
+def thermax_tcx(temp):
+    """Thermax thermal conductivity [W/m-K], temp in K."""
+    return THERMAX_K0 * np.exp(THERMAX_B * (np.asarray(temp, float) - 273.15))
+
+
+def thermax_tcx_integral(T_lo, T_hi):
+    """Exact Kirchhoff integral of thermax_tcx from T_lo to T_hi [W/m], temps in K."""
+    return THERMAX_K0 / THERMAX_B * (np.exp(THERMAX_B * (np.asarray(T_hi, float) - 273.15))
+                                     - np.exp(THERMAX_B * (np.asarray(T_lo, float) - 273.15)))
+
 
 def ins_tcx(temp):
     #Carbon insulation thermal conductivity in Argon

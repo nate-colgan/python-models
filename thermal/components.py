@@ -15,6 +15,19 @@ from .correlations import (
 )
 
 
+def _vprop(fn, T):
+    """Evaluate a property function on an array. Many property functions in
+    properties.py are scalar-only (they use `if T > ...`); fall back to
+    element-wise evaluation for those, and broadcast constant returns."""
+    T = np.asarray(T, dtype=float)
+    try:
+        out = fn(T)
+    except (ValueError, TypeError):
+        out = np.vectorize(fn, otypes=[float])(T)
+    out = np.asarray(out, dtype=float)
+    return np.broadcast_to(out, T.shape) if out.shape != T.shape else out
+
+
 class Fluid:
     def __init__(self, temperature: float, pressure: float, flow_rate: float):
         """
@@ -602,8 +615,151 @@ class StorageModule:
         Q_cond = (T_inner - T_outer) / R_cond
         return Q_cond
 
-    def update_temps(self, init_temp_dist: np.ndarray, Q_rad: np.ndarray, time_step: float, sub_steps: int, T_sur: float, block_heat_loss: bool) -> np.ndarray:
+    # ------------------------------------------------------------------
+    # Axial mesh (optional non-uniform ring heights)
+    # ------------------------------------------------------------------
+    def set_axial_mesh(self, edges):
+        """Use explicit axial ring edges [m] (length num_ax_segments + 1).
+        Ring heights may be non-uniform. Without this, rings are uniform with
+        height segment_length."""
+        edges = np.asarray(edges, dtype=float)
+        if edges.size != self.num_ax_segments + 1 or np.any(np.diff(edges) <= 0):
+            raise ValueError("axial edges must be increasing with num_ax_segments+1 entries")
+        self.axial_edges = edges
+
+    def axial_dz(self):
+        edges = getattr(self, 'axial_edges', None)
+        if edges is None:
+            return np.full(self.num_ax_segments, float(self.segment_length))
+        return np.diff(edges)
+
+    def update_temps(self, init_temp_dist: np.ndarray, Q_rad: np.ndarray, time_step: float,
+                     sub_steps: int, T_sur: float, block_heat_loss: bool,
+                     auto_substep: bool = True, safety: float = 0.9, dQ_dTw=None, Q_out=None):
         """
+        Explicit finite-difference update of the block temperature field (vectorised).
+
+        Same discretisation as the original loop version (`_update_temps_reference`):
+        each node's own k(T) is used for its in- and out-going fluxes; inner wall
+        receives Q_rad[i]; outer wall adiabatic or insulated loss; top/bottom
+        adiabatic. Generalised to non-uniform ring heights (set_axial_mesh): radial
+        conductances scale with ring height, axial conductances use the
+        centre-to-centre distance.
+
+        Stability: with auto_substep=True the number of sub-steps is raised (never
+        lowered) so that every node satisfies dt_sub <= safety * C_node / sum(G_node).
+        The count used is stored in self.last_n_sub.
+
+        dQ_dTw (optional, nA x nA): sensitivity of the inner-wall heat input Q_rad to
+        the inner-wall temperatures. When given, the wall input is linearised about
+        the start-of-step wall temperatures, Q = Q_rad + dQ_dTw (T_w - T_w0), and
+        treated implicitly in every sub-step (IMEX: conduction explicit, radiation
+        implicit). Needed for the axial enclosure model, whose ring-to-ring exchange
+        (effective k ~ 1e3 W/m-K) is far too stiff for an explicit wall flux. The
+        mean applied wall input is stored in self.last_Q_wall.
+
+        Q_out (optional): prescribed heat sink [W], held over the step. Shape (nA,) ->
+        outer-wall node of each ring; shape (nA, nR) -> every node (e.g. roof / floor
+        insulation losses on the top / bottom rings). Counted in surf_heat_loss.
+
+        Returns (T_new, int_energy_tot, surf_heat_loss) as before.
+        """
+        nA, nR = self.num_ax_segments, self.num_rad_segments
+        r_inner, r_outer = self.block.rad_in, self.block.rad_out
+        dr = (r_outer - r_inner) / nR
+        dz = self.axial_dz()                                  # (nA,)
+        dz_c = 0.5 * (dz[1:] + dz[:-1])                       # (nA-1,) centre spacing
+        j = np.arange(nR)
+        r_lo = r_inner + j * dr
+        r_hi = r_lo + dr
+        ring = np.pi * (r_hi ** 2 - r_lo ** 2)                # (nR,) ring cross-section
+        # geometric radial factors, evaluated exactly as in the reference loop
+        ln_out = np.log((r_lo + 1.5 * dr) / (r_lo + 0.5 * dr))    # node j -> j+1, from node j
+        ln_in = np.log((r_lo + 0.5 * dr) / (r_lo - 0.5 * dr))     # node j-1 -> j, from node j
+        Q_rad = np.asarray(Q_rad, dtype=float)
+        T = np.array(init_temp_dist, dtype=float, copy=True)
+
+        if block_heat_loss:
+            r_c_last = r_lo[-1] + 0.5 * dr
+            D_ins_out = 2 * (self.block.rad_out + self.block.th_ins)
+            R_conv = 1 / (100 * np.pi * (2 * self.block.rad_out + 2 * self.block.th_ins) * dz)
+
+            def _loss(Tw):
+                R_ins = RprimeCondCyl(2 * r_c_last, D_ins_out, _vprop(ins_tcx, (T_sur + Tw) / 2)) / dz
+                return (Tw - T_sur) / (R_ins + R_conv)
+
+        n_sub = int(sub_steps)
+        if auto_substep:
+            k0 = _vprop(storage_tcx, T)
+            C0 = _vprop(storage_cp, T) * _vprop(storage_rho, T) * ring[None, :] * dz[:, None]
+            G = np.zeros_like(T)
+            G[:, :-1] += k0[:, :-1] * 2 * np.pi * dz[:, None] / ln_out[None, :-1]
+            G[:, 1:] += k0[:, 1:] * 2 * np.pi * dz[:, None] / ln_in[None, 1:]
+            if nA > 1:
+                G[:-1] += k0[:-1] / dz_c[:, None] * ring[None, :]
+                G[1:] += k0[1:] / dz_c[:, None] * ring[None, :]
+            if block_heat_loss:
+                R_ins0 = RprimeCondCyl(2 * r_c_last, D_ins_out, _vprop(ins_tcx, (T_sur + T[:, -1]) / 2)) / dz
+                G[:, -1] += 1 / (R_ins0 + R_conv)
+            dt_crit = float(np.min(C0 / np.maximum(G, 1e-300)))
+            n_sub = max(n_sub, int(np.ceil(time_step / (safety * dt_crit))))
+        self.last_n_sub = n_sub
+        sub_dt = time_step / n_sub
+
+        int_energy_tot = 0.0
+        surf_heat_loss = 0.0
+        Q_node = None
+        if Q_out is not None:
+            Q_out = np.asarray(Q_out, dtype=float)
+            if Q_out.ndim == 1:
+                Q_node = np.zeros((nA, nR))
+                Q_node[:, -1] = Q_out
+            else:
+                Q_node = Q_out.reshape(nA, nR)
+            Q_node_sum = float(Q_node.sum())
+        implicit = dQ_dTw is not None
+        if implicit:
+            D = np.asarray(dQ_dTw, dtype=float)
+            Tw0 = T[:, 0].copy()
+            Q_wall_sum = np.zeros(nA)
+        for _ in range(n_sub):
+            k = _vprop(storage_tcx, T)
+            hin_r = np.zeros_like(T); hout_r = np.zeros_like(T)
+            hin_a = np.zeros_like(T); hout_a = np.zeros_like(T)
+            hin_r[:, 0] = 0.0 if implicit else Q_rad
+            hout_r[:, :-1] = k[:, :-1] * (T[:, :-1] - T[:, 1:]) * 2 * np.pi * dz[:, None] / ln_out[None, :-1]
+            hin_r[:, 1:] = k[:, 1:] * (T[:, :-1] - T[:, 1:]) * 2 * np.pi * dz[:, None] / ln_in[None, 1:]
+            if block_heat_loss:
+                q_loss = _loss(T[:, -1])
+                hout_r[:, -1] = q_loss
+                surf_heat_loss += float(np.sum(q_loss)) * sub_dt
+            if nA > 1:
+                hout_a[:-1] = k[:-1] * (T[:-1] - T[1:]) / dz_c[:, None] * np.pi * (r_hi ** 2 - r_lo ** 2)[None, :]
+                hin_a[1:] = k[1:] * (T[:-1] - T[1:]) / dz_c[:, None] * np.pi * (r_hi ** 2 - r_lo ** 2)[None, :]
+            net = (hin_r - hout_r) + (hin_a - hout_a)
+            if Q_node is not None:          # prescribed sink [W per node]
+                net -= Q_node
+                surf_heat_loss += Q_node_sum * sub_dt
+            C = _vprop(storage_cp, T) * _vprop(storage_rho, T) * np.pi * (r_hi ** 2 - r_lo ** 2)[None, :] * dz[:, None]
+            if implicit:
+                # wall column: (C/dt - D) Tw_new = C/dt Tw + net_cond + Q_rad - D Tw0
+                Cw = C[:, 0] / sub_dt
+                Tw_new = np.linalg.solve(np.diag(Cw) - D, Cw * T[:, 0] + net[:, 0] + Q_rad - D @ Tw0)
+                q_w = Q_rad + D @ (Tw_new - Tw0)
+                Q_wall_sum += q_w
+                net[:, 0] += q_w
+            int_energy_tot += float(np.sum(net)) * sub_dt
+            T = T + net * sub_dt / C
+            if implicit:
+                T[:, 0] = Tw_new
+        if implicit:
+            self.last_Q_wall = Q_wall_sum / n_sub
+        return T, int_energy_tot, surf_heat_loss
+
+    def _update_temps_reference(self, init_temp_dist: np.ndarray, Q_rad: np.ndarray, time_step: float, sub_steps: int, T_sur: float, block_heat_loss: bool) -> np.ndarray:
+        """
+        ORIGINAL loop implementation, kept only to verify the vectorised
+        update_temps (uniform ring heights only, no stability control).
         Update the temperature distribution in the storage block.
 
         Parameters:
