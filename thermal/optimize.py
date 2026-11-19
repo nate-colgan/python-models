@@ -119,13 +119,13 @@ OPT_DEFAULTS = {
 DESIGN_VARS = [
     ('liner_side', 0.20, 0.60, False, 'liner side length [m]'),
     ('ps_frac', 0.0, 1.0, False, 'powerstick side: 0.10 m + frac x (room in liner - 0.10)'),
-    ('L', 1.0, 5.0, False, 'stick length [m]'),
+    ('L', 3.0, 6.0, False, 'stick length [m]'),
     ('H_frac', 0.0, 1.0, False, 'block height: L + frac x (H_max - L)'),
     ('avg_flux', 5.0, 20.0, False, 'cell flux target [W/cm2] (continuous)'),
     ('shade_8th', 2, 24, True, 'shade thickness i x 1/8 in (1/4 - 3 in)'),
-    ('t_side', 0.5, 2.0, False, 'tank side insulation [m]'),
-    ('t_top', 0.5, 2.0, False, 'tank top insulation [m]'),
-    ('T_max_C', 1600.0, 2500.0, False, 'block T_max [C] (capped at geometry.T_cap_C); T_min from shade-open sizing'),
+    ('t_side', 0.5, 3.0, False, 'tank side insulation [m]'),
+    ('t_top', 0.5, 3.0, False, 'tank top insulation [m]'),
+    ('T_max_C', 1800.0, 2500.0, False, 'block T_max [C] (capped at geometry.T_cap_C); T_min from shade-open sizing'),
 ]
 VAR_NAMES = [v[0] for v in DESIGN_VARS]
 BOUNDS = [(v[1], v[2]) for v in DESIGN_VARS]
