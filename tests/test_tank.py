@@ -181,3 +181,82 @@ def test_heater_cell_matches_stick_and_closes_energy():
     E_in = float(np.sum(r['Q_heater'][1:] * np.diff(r['time'])))
     dE = storage_rho(2400.0) * storage_cp(2400.0) * hm.V * (r['T_avg'][-1] - r['T_avg'][0])
     assert abs(E_in / dE - 1) < 1e-6
+
+
+def test_optimizer_decode_valid_and_roundtrip():
+    """Every point in the design box decodes to a valid geometry; encode inverts decode."""
+    from thermal import optimize as O
+    opt = O.OPT_DEFAULTS
+    g = opt['geometry']
+    rng = np.random.default_rng(0)
+    lo, hi = np.array([b[0] for b in O.BOUNDS]), np.array([b[1] for b in O.BOUNDS])
+    for _ in range(500):
+        x = lo + rng.random(len(lo)) * (hi - lo)
+        x[O.INTEGRALITY] = np.round(x[O.INTEGRALITY])
+        d = O.decode(x, opt)
+        assert 0.10 - 1e-12 <= d['ps_side'] <= d['liner_side'] - 2 * g['ps_liner_gap'] + 1e-12
+        assert d['L'] <= d['H_block'] <= g['H_max'] + 1e-12
+        assert 1600 - 1e-9 <= d['T_max_C'] <= g['T_cap_C'] + 1e-9
+        assert 5.0 <= d['avg_flux'] <= 20.0 and abs(d['avg_flux'] / 2.5 - round(d['avg_flux'] / 2.5)) < 1e-9
+        x2 = O.encode(d, opt)
+        d2 = O.decode(x2, opt)
+        for k in ('liner_side', 'ps_side', 'L', 'avg_flux', 'shade_thickness', 'T_max_C', 't_side', 't_top'):
+            assert abs(d2[k] - d[k]) < 1e-9, k
+        if d['H_block'] > d['L']:
+            assert abs(d2['H_block'] - d['H_block']) < 1e-9
+
+
+def test_degradation_keeps_geometry():
+    """cfg['degradation'] changes the cell efficiency and emissivities, not the block:
+    cell D -> efficiency and inactive emissivity, bare D -> bare emissivity."""
+    from thermal.build import build_tinless, load_config
+    cfg = load_config(os.path.join(ROOT, 'tinless_model_input.yaml'))
+    ov = {'storage.num_ax_segments': 10, 'storage.num_rad_segments': 4}
+    m0 = build_tinless(cfg, ov, geometry_only=True)
+    m1 = build_tinless(dict(cfg, degradation={'cell': 0.2, 'bare': 0.1, 'emis_end': 0.8}), ov, geometry_only=True)
+    assert m1.r_out == m0.r_out and m1.r_in == m0.r_in and m1.V_block == m0.V_block
+    assert abs(m1.sim.cell_eff_factor - 0.8) < 1e-12 and m0.sim.cell_eff_factor == 1.0
+    for (b0, a0, eb0, ei0), (b1, a1, eb1, ei1) in zip(m0.powerstick.emissivity_table, m1.powerstick.emissivity_table):
+        assert a1 == a0
+        assert abs(eb1 - (eb0 + 0.1 * (0.8 - eb0))) < 1e-12
+        assert abs(ei1 - (ei0 + 0.2 * (0.8 - ei0))) < 1e-12
+
+
+def test_maintenance_event_counts():
+    """Replacements and cleanings strictly before end of life; cleanings exclude the
+    ones that coincide with a replacement."""
+    from thermal.optimize import _n_events
+    assert _n_events(0.0, 2.0) == 0
+    assert _n_events(1.9, 2.0) == 0
+    assert _n_events(2.0, 2.0) == 0          # reaches the threshold exactly at end of life
+    assert _n_events(5.0, 2.0) == 2
+    assert _n_events(5.0, 1.0) == 4          # resets at 1, 2, 3, 4 nm; 2 and 4 are replacements
+
+
+def test_pareto_front():
+    from thermal.optimize import pareto
+    rows = [dict(capex_total=c, RTE=e, violations=v) for c, e, v in
+            [(100, .30, {}), (90, .25, {'rte': .1}), (110, .29, {}), (120, .35, {}), (80, .40, {'energy': .1})]]
+    front = pareto(rows)
+    assert [(r['capex_total'], r['RTE']) for r in front] == [(90, .25), (100, .30), (120, .35)]
+
+
+def test_shade_open_point():
+    """Opening placed where the falling flux, extrapolated back, meets the target."""
+    from types import SimpleNamespace as NS
+    from thermal.sizing import shade_open_point
+    ps = NS(width=0.25, height=1.0, f_bare=0.0, f_active=1.0)
+    A = 4 * 0.25 * 1.0 * 1e4
+    m = NS(powerstick=ps, f_shade_min=0.0, f_shade_max=0.9, avg_flux=10.0)
+    t = np.array([0., 1., 2., 3., 4., 5.]) * 3600
+    q = np.array([12., 10., 10., 9.5, 9.0, 8.5])          # opens between 2 h and 3 h, at 2 h
+    r = dict(time=t, f_shade=np.array([.9, .5, .2, 0., 0., 0.]), ps_active=np.ones(6, bool),
+             T_avg=np.array([2500., 2450., 2400., 2350., 2300., 2250.]), Q_cell=q * A)
+    pt = shade_open_point(m, r)
+    assert pt['seen'] and abs(pt['t_open'] - 2 * 3600) < 1e-6 and abs(pt['T_open'] - 2400.) < 1e-9
+    # still regulating when the stick comes out: f linear in T reaches 0 at 2200 K, 6 h
+    r['f_shade'] = np.array([.9, .5, .4, .3, .2, .1])
+    pt = shade_open_point(m, r)
+    assert not pt['seen'] and abs(pt['T_open'] - 2200.) < 1e-6 and abs(pt['t_open'] - 6 * 3600) < 1e-3
+    r['f_shade'] = np.full(6, .9)                           # closed to the end
+    assert shade_open_point(m, r) is None

@@ -703,6 +703,7 @@ class AxialRadiation:
         Q_cell = sol['Q_cell']
         flux = Q_cell / self.A_cell_cm2_seg
         eff = panel_efficiency(self.liner.band_gap, sol['T_liner_in'], flux=flux)
+        eff = eff * getattr(self.sim, 'cell_eff_factor', 1.0)      # cell degradation (deposition)
         Q_elec = Q_cell * eff
         Q_waste = sol['Q_ps'] - Q_elec
         nanv = np.full(self.n, np.nan)
@@ -882,6 +883,7 @@ class VaneHybridRadiation:
         sol = self.solve(T_dist[:, 0], control=control)
         Q_cell = sol['Q_cell']
         eff = panel_efficiency(self.liner.band_gap, sol['T_liner_in'], flux=Q_cell / self.A_cell_cm2_seg)
+        eff = eff * getattr(self.sim, 'cell_eff_factor', 1.0)      # cell degradation (deposition)
         Q_elec = Q_cell * eff
         self.sim._step_temps = {
             'T_liner_out': sol['T_liner_out'],

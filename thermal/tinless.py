@@ -392,6 +392,7 @@ class TinlessSimulation:
             T_emit_i   = T_liner_i if ps.liner_bool else T_wall_i
             flux_wcm2  = Q_cell[i] / A_cell_cm2
             eff_i      = panel_efficiency(band_gap, T_emit_i, flux=flux_wcm2)
+            eff_i     *= getattr(self, 'cell_eff_factor', 1.0)   # cell degradation (deposition)
             Q_elec[i]  = Q_cell[i] * eff_i
             Q_waste[i] = Q_rad[i] - Q_elec[i]
             lt = getattr(self, '_last_temps', {})
@@ -496,6 +497,15 @@ class TinlessSimulation:
         n_ax     = storage.num_ax_segments
         _use_shade = self.shade_bool and self.nominal_cell_flux is not None
         _dep_kw = deposition_kwargs or {}
+        # volume weights (radial rings x ring heights): T_avg and the T_ps_cutoff test use
+        # the volume-weighted block average; T_inner / T_outer are ring-height weighted
+        _nR = storage.num_rad_segments
+        _r = storage.block.rad_in + np.arange(_nR + 1) * (storage.block.rad_out - storage.block.rad_in) / _nR
+        _sl = storage.axial_dz()
+        _W = np.diff(_r ** 2)[None, :] * _sl[:, None]
+        _W = _W / _W.sum()
+        _wz = _sl / _sl.sum()
+        _Tavg = lambda T_d: float((T_d * _W).sum())
 
         T = storage.block.temp_dist
         f_shade, (Q0, Q_elec0, Q_cell0, _, T_liner0) = self._radiation_step(T, _use_shade)
@@ -505,9 +515,9 @@ class TinlessSimulation:
         Q_arr           = [Q0.sum()]
         Q_cell_arr      = [Q_cell0.sum()]
         Q_elec_arr      = [Q_elec0.sum()]
-        T_avg_arr       = [T.mean()]
-        T_inner_arr     = [T[:, 0].mean()]
-        T_outer_arr     = [T[:, -1].mean()]
+        T_avg_arr       = [_Tavg(T)]
+        T_inner_arr     = [float(T[:, 0] @ _wz)]
+        T_outer_arr     = [float(T[:, -1] @ _wz)]
         T_liner_arr     = [T_liner0.mean()]
         T_liner_out_arr   = [np.nanmean(_st0['T_liner_out'])]
         T_foil_inner_arr  = [np.nanmean(_st0['T_foil_inner'])]
@@ -592,10 +602,10 @@ class TinlessSimulation:
             t += dt
 
             # Check powerstick cutoff after this step.
-            if T_ps_cutoff is not None and _ps_active and T_new.mean() <= T_ps_cutoff:
+            if T_ps_cutoff is not None and _ps_active and _Tavg(T_new) <= T_ps_cutoff:
                 _ps_active   = False
                 t_ps_removed = t
-                print(f"[discharge] T_avg={T_new.mean():.0f} K reached cutoff "
+                print(f"[discharge] T_avg={_Tavg(T_new):.0f} K reached cutoff "
                       f"{T_ps_cutoff:.0f} K at t={t/3600:.4f} hr ({t:.1f} s) — "
                       f"powerstick removed, conduction-only phase begins.")
                 if stop_at_cutoff:
@@ -606,9 +616,9 @@ class TinlessSimulation:
             Q_arr.append(Q_rad.sum())
             Q_cell_arr.append(Q_cell.sum())
             Q_elec_arr.append(Q_elec.sum())
-            T_avg_arr.append(T_new.mean())
-            T_inner_arr.append(T_new[:, 0].mean())
-            T_outer_arr.append(T_new[:, -1].mean())
+            T_avg_arr.append(_Tavg(T_new))
+            T_inner_arr.append(float(T_new[:, 0] @ _wz))
+            T_outer_arr.append(float(T_new[:, -1] @ _wz))
             T_liner_arr.append(T_liner.mean())
             T_liner_out_arr.append(np.nanmean(_st['T_liner_out']))
             T_foil_inner_arr.append(np.nanmean(_st['T_foil_inner']))
@@ -644,7 +654,7 @@ class TinlessSimulation:
 
             if print_interval and (t - last_print_t >= print_interval):
                 _tag = '' if _ps_active else '  [cond-only]'
-                print(f"t={t/3600:.2f} hr  T_avg={T_new.mean():.0f} K  "
+                print(f"t={t/3600:.2f} hr  T_avg={_Tavg(T_new):.0f} K  "
                       f"Q_cell={Q_cell.sum()/1e3:.1f} kW  f_sh={f_shade:.3f}  "
                       f"dt={dt:.0f} s{_tag}")
                 last_print_t = t

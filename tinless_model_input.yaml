@@ -27,9 +27,9 @@ emissivity_tables:
 
 # -- Storage Block ------------------------------------------------------------
 storage:
-  avg_flux: 12.5            # average power density to extract [W/cm^2]
+  avg_flux: 10            # average power density to extract [W/cm^2]
   duration_hr: 50          # discharge duration [hr]
-  T_min: 2173              # minimum (empty) block temperature [K]
+  T_min: 1873              # minimum (empty) block temperature [K]
   block_temp_range: 500    # operating temperature swing [K]
   L: 3                   # axial length [m]
   block_height: 10       # block + heater + shade height [m]; null -> L. Stick + liner (length L) hang top-aligned
@@ -39,12 +39,12 @@ storage:
 
 # -- Powerstick ---------------------------------------------------------------
 powerstick:
-  side_len: 0.2           # square cross-section side length [m]
+  side_len: 0.13           # square cross-section side length [m]
   area_ratio: 10           # r_in / r_ps_eff. IGNORED when shade_bool: true (cavity = minimum that fits the shade around the liner)
   cooling_temp: 323        # powerstick cooling temperature [K]
   f_bare: 0.05
   f_active: .9
-  liner_side_len: 0.3     # square side length of liner [m]; r_liner = 2*side_len/pi
+  liner_side_len: 0.25     # square side length of liner [m]; r_liner = 2*side_len/pi
   liner_thickness: 0.005  # liner wall thickness [m]
   tungsten_foil: false   # add W foil between TaC face and powerstick
 
@@ -71,7 +71,7 @@ shade:
 # radiation, no liner-bottom model). See decoupled_block_height_brief.md.
 liner_bottom:
   enabled: true            # true -> liner-bottom plate + RGF pad model, bottom-cap flux reported
-  rgf_thickness: 0.025      # RGF pad on external bottom of liner [m]
+  rgf_thickness: 0.05      # RGF pad on external bottom of liner [m]
   rgf_outer_emissivity: null   # pad underside emissivity; null -> shade.surface_emissivity
   include_flux_to_cells_in_power: false  # LB -> lowest cell flux always reported; added to P only if true
 
@@ -96,8 +96,8 @@ radiation:
 # Heating stops when block T_avg reaches T_min + block_temp_range.
 heater:
   side_len: 0.15            # m   (heater rod side length)
-  area_ratio: 2.8           # D_cavity / D_heater; heater cavity also sets the tank layout (tank.py)
-  max_temperature: 2773     # K   (maximum heater surface temperature)
+  area_ratio: 4.5           # D_cavity / D_heater; heater cavity also sets the tank layout (tank.py)
+  max_temperature: 2873     # K   (maximum heater surface temperature)
   max_power: 750000         # W   (maximum electrical power input)
   emissivity: 0.85           # gray-body emissivity of heater surface
   charge_hr: 30           # target charge time [h] for the heater-cavity search; null -> end_time

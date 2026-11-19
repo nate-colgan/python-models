@@ -183,7 +183,7 @@ def build_tinless(cfg, overrides=None, verbose=False, geometry_only=False):
               for r in emissivity_table)
     E_req = avg_flux * 1e4 * A_ps * f_cell / f_Q * duration_hr * 3600
     e_dens = storage_rho(T_avg_) * storage_cp(T_avg_) * block_temp_range
-    V_block = E_req / e_dens
+    V_block = E_req / e_dens * float(s.get('volume_factor', 1.0) or 1.0)   # optimizer: clean-run correction
     r_out = np.sqrt(V_block / (np.pi * H_block) + r_in ** 2)
     say(f"Block: r_in={r_in:.3f} m  r_out={r_out:.3f} m  L={L} m  V={V_block:.2f} m^3")
 
@@ -248,6 +248,22 @@ def build_tinless(cfg, overrides=None, verbose=False, geometry_only=False):
         f"(dz_low={z_act0/max(n_low,1):.3f} m, dz_act={L/n_act:.3f} m)" if n_low else
         f"Mesh: H_block={H_block} m = L, {n_act} rings (dz={L/n_act:.3f} m)")
 
+    # ── Deposition degradation (optimizer) ──────────────────────────────────
+    # cfg['degradation'] = {'cell': D_c, 'bare': D_b, 'emis_end': 0.8}
+    #   D_c: cell efficiency x (1 - D_c); inactive (on-cell) emissivity rises linearly to emis_end
+    #   D_b: bare-area emissivity rises linearly to emis_end (bare areas are cleaned separately)
+    # {'frac': D} sets both. The sizing above keeps the fresh table, so a degraded model has
+    # exactly the fresh geometry.
+    deg = cfg.get('degradation') or {}
+    D_c = float(deg.get('cell', deg.get('frac', 0.0)) or 0.0)
+    D_b = float(deg.get('bare', deg.get('frac', 0.0)) or 0.0)
+    D_deg = D_c
+    emis_run = emissivity_table
+    if D_c > 0 or D_b > 0:
+        e_end = float(deg.get('emis_end', 0.8))
+        emis_run = [(b, a, e_b + D_b * (e_end - e_b), e_i + D_c * (e_end - e_i))
+                    for (b, a, e_b, e_i) in emissivity_table]
+
     # ── Components ───────────────────────────────────────────────────────────
     block = GraphiteBlock(initial_temp_distribution=np.full((n_ax_tot, num_rad), float(T_max)),
                           inner_radius=r_in, outer_radius=r_out, length=H_block, th_ins=th_ins)
@@ -259,7 +275,7 @@ def build_tinless(cfg, overrides=None, verbose=False, geometry_only=False):
         storage.set_axial_mesh(edges)
     powerstick = PowerStick(axial_steps=n_act, width=side_len, height=L, cooling_temp=T_ps,
                             f_bare=f_bare, f_active=f_active, liner_bool=liner_bool,
-                            liner_width=liner_side_len, emissivity_table=emissivity_table)
+                            liner_width=liner_side_len, emissivity_table=emis_run)
     # Liner bottom + RGF pad (axial model only). Disabled: pad underside reradiating
     # (adiabatic liner bottom).
     pad = None
@@ -278,6 +294,7 @@ def build_tinless(cfg, overrides=None, verbose=False, geometry_only=False):
                             f_shade_min=f_shade_min, f_shade_max=f_shade_max,
                             nominal_cell_flux=avg_flux, liner_material=liner_material,
                             liner_thickness=liner_thickness, liner_tungsten_foil=liner_tungsten_foil)
+    sim.cell_eff_factor = 1.0 - D_deg
 
     # ── Deposition kwargs (as in notebook) ───────────────────────────────────
     r_liner_eff = 2 * liner_side_len / np.pi
@@ -334,5 +351,5 @@ def build_tinless(cfg, overrides=None, verbose=False, geometry_only=False):
         liner_bool=liner_bool, liner_material=liner_material,
         f_shade_min=f_shade_min, f_shade_max=f_shade_max,
         T_min=T_min, T_max=T_max, E_req=E_req, V_block=V_block, f_Q=f_Q, A_ps=A_ps,
-        avg_flux=avg_flux,
+        avg_flux=avg_flux, degradation=dict(cell=D_c, bare=D_b),
     )
