@@ -41,6 +41,17 @@ def load_config(path='tinless_model_input.yaml'):
             continue
 
 
+def heater_max_power(h, H):
+    """Heater max electrical power [W] for a heater of length H [m] (it spans the block
+    height): heater.max_power if given (absolute override, used by the optimizer's
+    power search), else heater.max_power_per_m x H."""
+    if h.get('max_power') is not None:
+        return float(h['max_power'])
+    if h.get('max_power_per_m') is None:
+        raise KeyError("heater: give max_power_per_m [W/m] (or an absolute max_power [W])")
+    return float(h['max_power_per_m']) * float(H)
+
+
 def build_heater(m, area_ratio=None):
     """Single-heater charge model matching a build_tinless model `m` (checkerboard: one
     heater per stick, N_h = N_ps). The heater cell holds the same graphite as the stick
@@ -75,7 +86,7 @@ def build_heater(m, area_ratio=None):
                     f_bare=m.powerstick.f_bare, f_active=m.powerstick.f_active, liner_bool=False,
                     liner_width=None, emissivity_table=m.emissivity_table)
     sim = TinlessSimulation(storage, ps, T_sur=cfg['T_sur'], block_heat_loss=cfg['block_heat_loss_bool'])
-    heater = HeatingElement(diameter=2 * r_h, max_temperature=h['max_temperature'], max_power=h['max_power'],
+    heater = HeatingElement(diameter=2 * r_h, max_temperature=h['max_temperature'], max_power=heater_max_power(h, H),
                             emissivity=h['emissivity'])
     if r_h >= r_in:
         raise ValueError(f"heater radius {r_h:.3f} m >= cavity radius {r_in:.3f} m (heater.area_ratio {ar})")

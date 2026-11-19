@@ -91,14 +91,15 @@ radiation:
 
 # -- Heater ------------------------------------------------------------------
 # Central cylindrical resistive heating element used during charging.
-# Phase 1: max_power supplied; T_heater rises as graphite warms.
+# The heater spans the block height; max power = max_power_per_m x block_height.
+# Phase 1: max power supplied; T_heater rises as graphite warms.
 # Phase 2: T_heater reaches max_temperature; power reduces to hold that temp.
 # Heating stops when block T_avg reaches T_min + block_temp_range.
 heater:
   side_len: 0.15            # m   (heater rod side length)
   area_ratio: 4.5           # D_cavity / D_heater; heater cavity also sets the tank layout (tank.py)
   max_temperature: 2873     # K   (maximum heater surface temperature)
-  max_power: 750000         # W   (maximum electrical power input)
+  max_power_per_m: 250000   # W/m (maximum electrical power per m of heater length)
   emissivity: 0.85           # gray-body emissivity of heater surface
   charge_hr: 30           # target charge time [h] for the heater-cavity search; null -> end_time
 

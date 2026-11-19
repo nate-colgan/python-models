@@ -45,7 +45,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from .build import build_tinless, build_heater
+from .build import build_tinless, build_heater, heater_max_power
 from .sizing import run_discharge, shade_open_resize, FluxUnreachable
 from .properties import storage_rho, storage_cp
 from . import tank as tk
@@ -188,6 +188,9 @@ def design_cfg(base_cfg, d, opt):
     cfg['end_time'] = max(float(cfg['end_time']), 4 * opt['duration_hr'] * 3600)   # run to the T_min cutoff
     s, p = cfg['storage'], cfg['powerstick']
     s['L'], s['block_height'] = d['L'], d['H_block']
+    if cfg['heater'].get('max_power_per_m') is None:      # cap = max_power_per_m x block height
+        raise KeyError("YAML heater.max_power_per_m is missing: run the YAML cell of tinless system model.ipynb")
+    cfg['heater'].pop('max_power', None)
     s['avg_flux'], s['duration_hr'] = d['avg_flux'], opt['duration_hr']
     g = opt['geometry']
     T_lo = d.get('T_min_guess_C', d['T_max_C'] - opt['sizing']['swing_guess'])   # sizing start
@@ -211,16 +214,18 @@ def design_cfg(base_cfg, d, opt):
 # --------------------------------------------------------------------------
 # Pipeline pieces
 # --------------------------------------------------------------------------
-def _with_heater_ar(m, cfg, ar):
+def _with_heater_ar(m, cfg, ar, P=None):
     c = copy.deepcopy(cfg)
     c['heater']['area_ratio'] = float(ar)
+    if P is not None:
+        c['heater']['max_power'] = float(P)
     m2 = SimpleNamespace(**vars(m))
     m2.cfg = c
     return m2, c
 
 
-def _charge(m, cfg, ar, end_hr, dt_scale):
-    m2, c = _with_heater_ar(m, cfg, ar)
+def _charge(m, cfg, ar, end_hr, dt_scale, P=None):
+    m2, c = _with_heater_ar(m, cfg, ar, P)
     hm = build_heater(m2, area_ratio=ar)
     sink = tk.cell_loss_sink(m2, c['tank']).for_storage(hm.storage)
     kw = dict(hm.run_kwargs, dt=hm.run_kwargs['dt'] * dt_scale)
@@ -235,8 +240,12 @@ def _charge(m, cfg, ar, end_hr, dt_scale):
 
 
 def heater_search(m, cfg, opt):
-    """Smallest heater.area_ratio with t_charge <= charge_hr (min gap to the cavity wall).
-    -> dict(ok, violation, ...)."""
+    """Heater power and cavity for t_charge <= charge_hr. The power cap is YAML
+    heater.max_power_per_m x heater length (= block height).
+      - cavity at its minimum (heater_min_gap) meets the target at the cap: the heater
+        power is cut to the smallest that still meets it (electrics costed on that);
+      - otherwise the cavity grows at the cap: smallest area_ratio that meets it.
+    -> dict(ok, violation, ar, t_charge, P_heater, ...)."""
     h = cfg['heater']
     target = opt['charge_hr']
     dts = opt['fidelity']['dt_scale']
@@ -248,14 +257,24 @@ def heater_search(m, cfg, opt):
     st = m.storage
     V = math.pi * (st.block.rad_out ** 2 - st.block.rad_in ** 2) * m.H_block
     E_blk = storage_rho(m.T_max) * storage_cp(m.T_max) * V * (m.T_max - m.T_min)
-    t_floor = E_blk / h['max_power'] / 3600
+    P_cap = heater_max_power(h, m.H_block)
+    t_floor = E_blk / P_cap / 3600
     if t_floor > target:
         return dict(ok=False, violation=t_floor / target - 1, reason='charge power-limited above target')
     end_hr = 1.5 * target
     ar_lo = (r_h + opt['geometry']['heater_min_gap']) / r_h
     c_lo = _charge(m, cfg, ar_lo, end_hr, dts)
     if c_lo['t_charge'] <= target:
-        return dict(ok=True, violation=0.0, **c_lo)
+        # minimum cavity is enough at the cap: smallest heater power that still meets the target
+        P_lo, P_hi, c_hi = E_blk / (target * 3600), P_cap, c_lo
+        while P_hi / P_lo > 1 + tol:
+            P_mid = math.sqrt(P_lo * P_hi)
+            c_mid = _charge(m, cfg, ar_lo, end_hr, dts, P=P_mid)
+            if c_mid['t_charge'] <= target:
+                P_hi, c_hi = P_mid, c_mid
+            else:
+                P_lo = P_mid
+        return dict(ok=True, violation=0.0, **c_hi)
     ar_hi, c_hi = ar_lo, c_lo
     for _ in range(8):
         ar_hi *= 1.6
@@ -596,7 +615,7 @@ def summary(res):
     L += [
         f"Plant: {res['N_ps']} sticks + heaters, hot zone {res['D_hot']:.1f} m, tank {res['D_tank']:.1f} x {res['H_tank']:.1f} m; "
         f"block r {res['r_in']:.3f}-{res['r_out']:.3f} m, T {res['T_min_C']:.0f}-{d['T_max_C']:.0f} C (shade-open sizing: "
-        f"volume x{res['volume_factor']:.3f}, {res['sizing_runs']} runs{'' if res['sizing_converged'] else ', NOT converged'}); heater cavity {res['heater_cavity_D']*1e3:.0f} mm "
+        f"volume x{res['volume_factor']:.3f}, {res['sizing_runs']} runs{'' if res['sizing_converged'] else ', NOT converged'}); heater {res['heater'].get('P_heater', 0)/1e3:,.0f} kW, cavity {res['heater_cavity_D']*1e3:.0f} mm "
         f"(area_ratio {res['heater_area_ratio']:.2f})",
         f"Cycle: charge {res['t_charge_hr']:.1f} h, hold {res['t_hold_hr']:.1f} h, discharge {res['t_discharge_hr']:.1f} h clean / "
         f"{res['t_discharge_deg_hr']:.1f} h end of interval; energy vs target {res['energy_mismatch']*100:+.1f}% (clean); "
