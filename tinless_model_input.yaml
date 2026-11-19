@@ -99,7 +99,7 @@ heater:
   side_len: 0.15            # m   (heater rod side length)
   area_ratio: 4.5           # D_cavity / D_heater; heater cavity also sets the tank layout (tank.py)
   max_temperature: 2873     # K   (maximum heater surface temperature)
-  max_power_per_m: 250000   # W/m (maximum electrical power per m of heater length)
+  max_power_per_m: 150000   # W/m (maximum electrical power per m of heater length)
   emissivity: 0.85           # gray-body emissivity of heater surface
   charge_hr: 30           # target charge time [h] for the heater-cavity search; null -> end_time
 

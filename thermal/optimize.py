@@ -62,11 +62,11 @@ INCH = 0.0254
 OPT_DEFAULTS = {
     'P_rated': 25.0e6,            # W AC export
     'duration_hr': 50.0,          # h at P_rated (energy target, enforced)
-    'charge_hr': 30.0,            # h design charge time (heater cavity sized to meet it)
+    'charge_hr': 50.0,            # h design charge time (heater power, then cavity, sized to meet it)
     'economics': {
         'eta_out': 0.98,          # DC -> AC inverter
         'eta_in': 0.98,           # AC -> heater supply
-        'cycles_per_year': 65.7,  # incl. hold at temperature (hold losses charged)
+        'cycles_per_year': 8760.0 / 168.0,   # 1-week cycle: charge + hold + discharge (hold losses charged)
         'lifetime_yr': 30.0,
         'soft_cost_frac': 0.30,   # tax, freight, soft costs on all capex (incl. replacements)
         'elec_price': 75.0,       # $/MWh, same for charge and discharge: prices the energy lost
@@ -81,6 +81,8 @@ OPT_DEFAULTS = {
         'inverter_per_kW': 100.0,          # $/kW_AC peak (NREL ~$75/kW ex-factory + install)
         'heat_rejection_per_kWth': 125.0,  # $/kW_th dry cooler (IEA SHC Task 48: $61-134, 2014)
         'bare_clean_per_stick': 0.0,       # $/stick per bare-area cleaning (tracked; cost TBD)
+        'interconnect_per_kW': 150.0,      # $/kW grid connection, sized on max(peak charge, peak output) AC
+                                           #   (LBNL: completed storage projects avg ~$151/kW) PLACEHOLDER
     },
     'parasitics': {
         # dry cooler fans + coolant pumps, kW_e per kW_th rejected (DIN V 18599 seasonal
@@ -105,6 +107,8 @@ OPT_DEFAULTS = {
         'H_max': 12.0,            # m block height upper bound
         'T_cap_C': 2500.0,        # C block T_max cap (heater max 2600 C)
         'T_min_floor_C': 1400.0,  # C lowest allowed T_min (constraint; T_min is a sizing output)
+        'min_wall': 0.30,         # m min graphite wall between neighbouring cavities (constraint);
+                                  #   stick cavities turned 45 deg to the checkerboard grid
         'swing_min': 200.0, 'swing_max': 1000.0,   # C allowed swing (constraint)
     },
     'limits': {'D_tank_max': 80.0, 'H_tank_max': 30.0},
@@ -117,8 +121,8 @@ DESIGN_VARS = [
     ('ps_frac', 0.0, 1.0, False, 'powerstick side: 0.10 m + frac x (room in liner - 0.10)'),
     ('L', 1.0, 5.0, False, 'stick length [m]'),
     ('H_frac', 0.0, 1.0, False, 'block height: L + frac x (H_max - L)'),
-    ('flux_idx', 0, 6, True, 'cell flux target 5 + 2.5 i [W/cm2]'),
-    ('shade_qin', 1, 8, True, 'shade thickness i x 1/4 in'),
+    ('avg_flux', 5.0, 20.0, False, 'cell flux target [W/cm2] (continuous)'),
+    ('shade_8th', 2, 24, True, 'shade thickness i x 1/8 in (1/4 - 3 in)'),
     ('t_side', 0.5, 2.0, False, 'tank side insulation [m]'),
     ('t_top', 0.5, 2.0, False, 'tank top insulation [m]'),
     ('T_max_C', 1600.0, 2500.0, False, 'block T_max [C] (capped at geometry.T_cap_C); T_min from shade-open sizing'),
@@ -152,8 +156,8 @@ def decode(x, opt):
     H = L + v['H_frac'] * max(g['H_max'] - L, 0.0)
     if H - L < 0.25:                       # a lower zone needs room for the liner bottom
         H = L
-    flux = 5.0 + 2.5 * int(round(v['flux_idx']))
-    shade_t = int(round(v['shade_qin'])) * 0.25 * INCH
+    flux = float(v['avg_flux'])
+    shade_t = int(round(v['shade_8th'])) * INCH / 8
     return dict(liner_side=liner, ps_side=ps, L=L, H_block=H, avg_flux=flux, shade_thickness=shade_t,
                 t_side=v['t_side'], t_top=v['t_top'], T_max_C=min(v['T_max_C'], g['T_cap_C']))
 
@@ -164,8 +168,8 @@ def encode(design, opt):
     liner, L = design['liner_side'], design['L']
     ps_hi = min(0.40, liner - 2 * g['ps_liner_gap'])
     x = [liner, (design['ps_side'] - 0.10) / max(ps_hi - 0.10, 1e-9), L,
-         (design['H_block'] - L) / max(g['H_max'] - L, 1e-9), round((design['avg_flux'] - 5.0) / 2.5),
-         round(design['shade_thickness'] / (0.25 * INCH)), design['t_side'], design['t_top'], design['T_max_C']]
+         (design['H_block'] - L) / max(g['H_max'] - L, 1e-9), design['avg_flux'],
+         round(design['shade_thickness'] / (INCH / 8)), design['t_side'], design['t_top'], design['T_max_C']]
     return np.clip(np.array(x, float), [b[0] for b in BOUNDS], [b[1] for b in BOUNDS])
 
 
@@ -396,6 +400,13 @@ def evaluate_design(d, base_cfg, opt):
         out.update(violations=viol, feasible=False)
         return out
     cfg['heater']['area_ratio'] = hs['ar']
+    # graphite walls between neighbouring cavities on the checkerboard
+    pitch, webs = tk.cavity_webs(m.r_in, m.r_out, hs['r_cav'], rotated=True)
+    out.update(pitch=pitch, webs=webs, min_wall=min(webs.values()))
+    if out['min_wall'] < g['min_wall']:
+        viol['wall'] = (g['min_wall'] - out['min_wall']) / g['min_wall']
+        out.update(violations=viol, feasible=False)
+        return out
     dep_nm = float(r_f.get('dep_total_nm', 0.0))
     cyc_life = eco['cycles_per_year'] * eco['lifetime_yr']
     dep_life = dep_nm * cyc_life                               # nm on one stick slot over the life
@@ -408,6 +419,7 @@ def evaluate_design(d, base_cfg, opt):
     D_c = min(d_rep, dep_life) / dep['d_dead_nm']              # end-of-interval states
     D_b = min(d_cln, dep_life) / dep['d_dead_nm']
     # 3. tank: pass 1 (clean) for the side + edge share, then sized on the clean AC stick
+    st_f = dataclasses.replace(st_f, A_hcav_default=math.pi * hs['r_cav'] ** 2)   # searched cavity -> tank layout
     t1 = tk.tank_system(st_f, cfg['tank'])
     pf = t1.stick_correction['penalty_frac']
     eo = eco['eta_out']
@@ -473,12 +485,15 @@ def evaluate_design(d, base_cfg, opt):
     P_ac_peak = N * max(mf['P_elec_peak'], md['P_elec_peak']) * eo
     inv_kW = max(opt['P_rated'], P_ac_peak) / 1e3
     Q_rej_peak = max(mf['Q_rej_peak'], md['Q_rej_peak'])
+    P_chg_ac = N * hs['P_heater'] / eco['eta_in']            # plant peak draw: all heaters at full power
+    ic_kW = max(P_chg_ac, P_ac_peak) / 1e3                  # grid connection: the larger of charge and output
     lines = {
         'tank (containment, insulation, supports, foundation)': tank.cost['total'][1],
         'storage graphite': tank.cost['storage_graphite'][1],
         'powersticks': N * stick_cost,
         'heaters': N * (cost['heater_fixed'] + cost['charge_electrics_per_kW'] * P_heat_kW),
         'inverters': cost['inverter_per_kW'] * inv_kW,
+        'grid interconnect': cost['interconnect_per_kW'] * ic_kW,
         'heat rejection': cost['heat_rejection_per_kWth'] * N * Q_rej_peak / 1e3,
     }
     soft = 1 + eco['soft_cost_frac']
@@ -506,7 +521,8 @@ def evaluate_design(d, base_cfg, opt):
         P_stick_fresh_kW=st_f.P_stick / 1e3, t_discharge_hr=t_dis_f, t_discharge_deg_hr=t_dis_d,
         t_charge_hr=hs['t_charge'], t_hold_hr=t_hold, heater_area_ratio=hs['ar'], heater_cavity_D=2 * hs['r_cav'],
         side_edge_frac=pf, loss_pct_day=tank.loss_cycle['Q_total'] * 86400 / hz.E_th * 100,
-        Q_rej_peak_kW=Q_rej_peak / 1e3, inverter_kW=inv_kW, r_in=m.r_in, r_out=m.r_out,
+        Q_rej_peak_kW=Q_rej_peak / 1e3, inverter_kW=inv_kW, interconnect_kW=ic_kW, P_charge_ac_kW=P_chg_ac / 1e3,
+        r_in=m.r_in, r_out=m.r_out,
         flux_fresh=mf, flux_deg=md, tank_warnings=tank.warnings,
     )
     return out
@@ -617,6 +633,8 @@ def summary(res):
         f"block r {res['r_in']:.3f}-{res['r_out']:.3f} m, T {res['T_min_C']:.0f}-{d['T_max_C']:.0f} C (shade-open sizing: "
         f"volume x{res['volume_factor']:.3f}, {res['sizing_runs']} runs{'' if res['sizing_converged'] else ', NOT converged'}); heater {res['heater'].get('P_heater', 0)/1e3:,.0f} kW, cavity {res['heater_cavity_D']*1e3:.0f} mm "
         f"(area_ratio {res['heater_area_ratio']:.2f})",
+        f"Grid: pitch {res['pitch']:.3f} m, graphite walls " + ', '.join(f"{k} {v*1e3:.0f}" for k, v in res['webs'].items())
+        + " mm (stick cavities at 45 deg)",
         f"Cycle: charge {res['t_charge_hr']:.1f} h, hold {res['t_hold_hr']:.1f} h, discharge {res['t_discharge_hr']:.1f} h clean / "
         f"{res['t_discharge_deg_hr']:.1f} h end of interval; energy vs target {res['energy_mismatch']*100:+.1f}% (clean); "
         f"losses {res['loss_pct_day']:.2f} %/day",
@@ -634,7 +652,8 @@ def summary(res):
         f"life ${res['loss_cost']/1e6:,.1f}M",
         f"Capex ${res['capex0']/1e6:.1f}M initial (incl. soft costs): " + ', '.join(
             f"{k.split(' (')[0]} ${v/1e6:.1f}M" for k, v in res['capex_lines'].items())
-        + f"; inverters sized {res['inverter_kW']/1e3:.1f} MW; cell replacement ${res['rep_cost']/1e6:.1f}M each",
+        + f"; inverters {res['inverter_kW']/1e3:.1f} MW, interconnect {res['interconnect_kW']/1e3:.1f} MW "
+        f"(charge {res['P_charge_ac_kW']/1e3:.1f} MW); cell replacement ${res['rep_cost']/1e6:.1f}M each",
         f"LIFETIME CAPEX ${res['capex_total']/1e6:,.1f}M; objective (capex + energy lost) "
         f"${res['lifetime_cost']/1e6:,.1f}M" + ('' if res['feasible'] else f"  INFEASIBLE {res['violations']}"),
     ]

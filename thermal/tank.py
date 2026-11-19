@@ -281,6 +281,22 @@ class HotZone:
         return math.pi * self.D_hot ** 2 / 4
 
 
+def cavity_webs(r_in, r_out, r_hcav, rotated=True):
+    """Graphite wall ('web') thickness between neighbouring cavities on the checkerboard
+    (pitch p = sqrt(A_c / 2), A_c = pi r_out^2 + pi r_hcav^2, as size_hot_zone).
+    Stick cavity: square of side S = pi r_in / 2 (r_in is its equivalent radius); heater
+    cavity: circle r_hcav. rotated=True: stick squares turned 45 deg to the grid, corners
+    toward the heaters, faces toward the diagonal stick neighbours.
+    -> (pitch, {'stick-heater', 'stick-stick', 'heater-heater'} [m])"""
+    p = math.sqrt((math.pi * r_out ** 2 + math.pi * r_hcav ** 2) / 2.0)
+    S = math.pi * r_in / 2.0
+    if rotated:
+        sh, ss = p - S / math.sqrt(2.0) - r_hcav, math.sqrt(2.0) * p - S
+    else:
+        sh, ss = p - S / 2.0 - r_hcav, math.sqrt(2.0) * (p - S)
+    return p, {'stick-heater': sh, 'stick-stick': ss, 'heater-heater': math.sqrt(2.0) * p - 2.0 * r_hcav}
+
+
 def size_hot_zone(st, P_rated, duration_hr, A_hcav):
     N = int(math.ceil(P_rated / st.P_stick))
     E_req = P_rated * duration_hr * 3600.0

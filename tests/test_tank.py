@@ -197,7 +197,9 @@ def test_optimizer_decode_valid_and_roundtrip():
         assert 0.10 - 1e-12 <= d['ps_side'] <= d['liner_side'] - 2 * g['ps_liner_gap'] + 1e-12
         assert d['L'] <= d['H_block'] <= g['H_max'] + 1e-12
         assert 1600 - 1e-9 <= d['T_max_C'] <= g['T_cap_C'] + 1e-9
-        assert 5.0 <= d['avg_flux'] <= 20.0 and abs(d['avg_flux'] / 2.5 - round(d['avg_flux'] / 2.5)) < 1e-9
+        assert 5.0 <= d['avg_flux'] <= 20.0
+        n8 = d['shade_thickness'] / (0.0254 / 8)                 # whole 1/8 in, 1/4 - 3 in
+        assert abs(n8 - round(n8)) < 1e-9 and 2 <= round(n8) <= 24
         x2 = O.encode(d, opt)
         d2 = O.decode(x2, opt)
         for k in ('liner_side', 'ps_side', 'L', 'avg_flux', 'shade_thickness', 'T_max_C', 't_side', 't_top'):
@@ -260,3 +262,18 @@ def test_shade_open_point():
     assert not pt['seen'] and abs(pt['T_open'] - 2200.) < 1e-6 and abs(pt['t_open'] - 6 * 3600) < 1e-3
     r['f_shade'] = np.full(6, .9)                           # closed to the end
     assert shade_open_point(m, r) is None
+
+
+def test_cavity_webs():
+    """Walls between cavities on the checkerboard, stick squares at 45 deg and aligned."""
+    import math
+    from thermal.tank import cavity_webs
+    r_in, r_out, r_h = 0.661, 0.992, 0.4295
+    p, w = cavity_webs(r_in, r_out, r_h, rotated=True)
+    S = math.pi * r_in / 2
+    assert abs(p - math.sqrt((math.pi * r_out**2 + math.pi * r_h**2) / 2)) < 1e-12
+    assert abs(w['stick-heater'] - (p - S / math.sqrt(2) - r_h)) < 1e-12
+    assert abs(w['stick-stick'] - (math.sqrt(2) * p - S)) < 1e-12
+    _, w0 = cavity_webs(r_in, r_out, r_h, rotated=False)
+    assert abs(w0['stick-stick'] - math.sqrt(2) * (p - S)) < 1e-12
+    assert w['stick-stick'] > w0['stick-stick'] and w['stick-heater'] < w0['stick-heater']
