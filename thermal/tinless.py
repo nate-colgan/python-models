@@ -3,7 +3,7 @@ from scipy.optimize import brentq
 import warnings
 from .properties import (gr_emis, gr_tcx, ins_tcx, panel_efficiency,
                           w_emis_total, w_emis_spectral_vec,
-                          zrc_emis_wavelength_temp)
+                          zrc_emis_wavelength_temp, liner_eps_out, liner_k)
 
 
 class HeatingElement:
@@ -233,7 +233,7 @@ class TinlessSimulation:
             TaC liner : inner face = TaC (binned spectral), outer face = graphite
             Graphite  : both faces = graphite
             """
-            eps_out = gr_emis(T_lin)
+            eps_out = float(liner_eps_out(liner_material, T_lin))     # graphite, or grafoil (gray)
             if liner_material == 'tac':
                 eps_in = np.clip(-0.0351 + 8.15e-5 * T_lin + (0.3008 - 4.46e-5 * T_lin) / wavelengths, 0.0, 1.0)
             elif liner_material == 'zrc':
@@ -249,7 +249,7 @@ class TinlessSimulation:
             w_foil_bool      = self.shade_outer_foil
             A_shade_sh      = f_shade * A_shade_seg
             A_liner_sh       = f_shade * A_liner_seg
-            eps_gr_liner_out = gr_emis(T_hot)  # liner outer face is always graphite
+            eps_gr_liner_out = float(liner_eps_out(liner_material, T_hot))  # liner outer face
             # R_rad_in: graphite wall → shade outer face (no-foil path; also used as _Q_max lower-bound)
             R_rad_in  = (VF_gr_shade * (1 - eps_gr) / eps_gr + 1 + (1 - eps_sh) / eps_sh) / A_shade_sh
             R_rad_out = (VF_shade_lin * (1 - eps_sh) / eps_sh
@@ -308,7 +308,7 @@ class TinlessSimulation:
                 Q_in += _Q_sh
             # Conduction through liner wall: graphite outer face → TaC inner face
             if liner_thickness > 0:
-                R_cond_liner = liner_thickness / (gr_tcx(T_liner_out) * A_liner_seg)
+                R_cond_liner = liner_thickness / (float(liner_k(liner_material, T_liner_out)) * A_liner_seg)
                 T_liner_in   = max(T_liner_out - Q_in * R_cond_liner, 400.0)
             else:
                 T_liner_in = T_liner_out

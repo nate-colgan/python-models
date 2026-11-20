@@ -11,8 +11,10 @@ dt_short_duration: 3600    # seconds of real time to use dt_short at the start
 sub_steps: 5              # FD sub-steps per time step (stability)
 T_sur: 300                # surroundings temperature [K]
 block_heat_loss_bool: False
-liner_bool: True         # True = TaC liner, False = no liner
-liner_material: graphite      # tac = TaC-coated inner face; graphite = uncoated graphite
+liner_bool: True         # True = liner (liner_material), False = no liner
+liner_material: graphite      # tac = TaC-coated inner face; graphite = uncoated graphite;
+                              #   grafoil = graphite-foil walls (+ CFC floor): emissivity 0.5 both faces,
+                              #   k = 4 W/mK through the foil (thermal.properties.LINER_GRAY)
 shade_bool: True       # True = insulating graphite shade, False = no shade
 print_outputs_bool: True
 
@@ -45,7 +47,7 @@ powerstick:
   f_bare: 0.05
   f_active: .9
   liner_side_len: 0.25     # square side length of liner [m]; r_liner = 2*side_len/pi
-  liner_thickness: 0.005  # liner wall thickness [m]
+  liner_thickness: 0.005  # liner wall thickness [m] (grafoil: 0.0005; also the liner-bottom plate)
   tungsten_foil: false   # add W foil between TaC face and powerstick
 
 # -- Insulating Shade -------------------------------------------------------

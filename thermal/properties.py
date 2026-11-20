@@ -228,6 +228,28 @@ def gr_tcx(temp: float) -> float:
                      )
     return np.interp(temp, tcx_arr[:,0], tcx_arr[:,1])
 
+
+# Liner materials with constant properties: gray emissivity on both faces and a constant
+# through-thickness conductivity [W/mK]. Others: graphite outer face + gr_tcx (tac / zrc /
+# graphite inner faces as in the liner models).
+#   grafoil: flexible graphite foil walls (typ. 0.5 mm), CFC floor
+LINER_GRAY = {
+    'grafoil': dict(eps=0.5, k=4.0),
+}
+
+
+def liner_eps_out(material, temp):
+    """Emissivity of the liner outer (block-facing) face."""
+    p = LINER_GRAY.get(str(material).lower())
+    return np.full(np.shape(temp), p['eps'], float) if p else gr_emis(temp)
+
+
+def liner_k(material, temp):
+    """Through-thickness conductivity of the liner wall [W/mK]."""
+    p = LINER_GRAY.get(str(material).lower())
+    return np.full(np.shape(temp), p['k'], float) if p else gr_tcx(temp)
+
+
 def w_tcx(temp: float) -> float:
     """
     Calculate the thermal conductivity of tungsten as a function of temperature.

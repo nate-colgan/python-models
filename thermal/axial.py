@@ -21,7 +21,7 @@ Surface models
   slat faces So/Si   gray RGF faces (ε_s), area f·A_ring; faces of a ring are
                      joined by exact 1-D RGF conduction q = (I(T_o) − I(T_i))/t_sh,
                      I(T) = ∫k dT (any k(T); no layer discretisation needed)
-  liner ring L_k     gray outer face (ε = gr_emis(T_Lo)); absorbed flux is
+  liner ring L_k     gray outer face (ε = gr_emis(T_Lo); constant for liner_material grafoil); absorbed flux is
                      conducted through the wall and radiated to the stick in
                      two bands, locally per segment (pre-tabulated vs T_Lo)
   floor / ceiling    reradiating (net flux 0), split at r_sh; loss hook not wired
@@ -36,7 +36,7 @@ import re
 
 import numpy as np
 
-from .properties import gr_emis, gr_tcx, ins_tcx, panel_efficiency
+from .properties import gr_emis, gr_tcx, ins_tcx, panel_efficiency, LINER_GRAY, liner_eps_out, liner_k
 
 SIGMA = 5.67036713e-8          # same constant as tinless.py
 _H, _C, _KB = 6.62607015e-34, 2.99792458e8, 1.380649e-23
@@ -124,6 +124,8 @@ class LinerTable:
             eps_in = np.clip(-0.0351 + 8.15e-5 * Tc + (0.3008 - 4.46e-5 * Tc) / wl, 0.0, 1.0)
         elif mat == 'zrc':
             eps_in = np.clip(0.70 - 1e-4 * Tc + 0.02 * (wl - 0.665), 0.0, 1.0)
+        elif mat in LINER_GRAY:
+            eps_in = np.full(B.shape, LINER_GRAY[mat]['eps'])
         else:
             eps_in = np.broadcast_to(gr_emis(Tc), B.shape)
         eps_in = np.maximum(eps_in, 1e-9)
@@ -138,7 +140,7 @@ class LinerTable:
         T_o = T.copy()
         if t > 0:
             for _ in range(50):
-                T_new = T + q_out * t / gr_tcx(T_o)
+                T_new = T + q_out * t / liner_k(mat, T_o)
                 if np.max(np.abs(T_new - T_o)) < 1e-9:
                     T_o = T_new
                     break
@@ -172,9 +174,24 @@ class LinerTable:
             e = np.clip(-0.0351 + 8.15e-5 * T + (0.3008 - 4.46e-5 * T) / self.wl, 0.0, 1.0)
         elif self.material == 'zrc':
             e = np.clip(0.70 - 1e-4 * T + 0.02 * (self.wl - 0.665), 0.0, 1.0)
+        elif self.material in LINER_GRAY:
+            e = np.full(self.wl.size, LINER_GRAY[self.material]['eps'])
         else:
             e = np.full(self.wl.size, float(gr_emis(T)))
         return np.maximum(e, 1e-9)
+
+    def eps_out(self, T):
+        """Emissivity of the liner outer (block / shade-facing) face."""
+        return liner_eps_out(self.material, T)
+
+    def deps_out_dT(self, T):
+        if self.material in LINER_GRAY:
+            return np.zeros(np.shape(T))
+        return _dgr_emis(T)
+
+    def k(self, T):
+        """Liner wall (and liner-bottom plate) conductivity [W/mK]."""
+        return liner_k(self.material, T)
 
     def q_in_cells_nodes(self, T_in):
         """Per-node net flux into the stick per unit stick area from a liner inner
@@ -257,7 +274,7 @@ class LinerBottom:
         I_R = float(self.kir.I_of(T_R))
 
         def T_mid_of(T_LB, Q):
-            return T_LB + Q * self.t_lb / (self.A_R * float(gr_tcx(T_LB))) if self.t_lb > 0 else T_LB
+            return T_LB + Q * self.t_lb / (self.A_R * float(self.tab.k(T_LB))) if self.t_lb > 0 else T_LB
 
         def res(T_LB):
             Q, _ = self._rad(T_LB, T_Li)
@@ -432,8 +449,8 @@ class AxialRadiation:
         c[iB] = 1 - eps_B
         a[iB] = eps_B * E_B
         T_L = Tu[eL]
-        eps_L = gr_emis(T_L)
-        deps_L = _dgr_emis(T_L) * dTdE[eL]
+        eps_L = self.liner.eps_out(T_L)
+        deps_L = self.liner.deps_out_dT(T_L) * dTdE[eL]
         c[iL] = 1 - eps_L
         a[iL] = eps_L * Eu[eL]
         if self.shaded:

@@ -12,10 +12,11 @@ One design = one call of `evaluate(x, base_cfg, opt)`:
                      the stick is retracted and a door closes the hole (door loss not modelled).
   3. tank            sized on the clean stick, AC basis: N_ps = ceil(P_rated / P_stick_AC),
                      energy target enforced on clean performance
-  4. degradation     stick run at the end of a replacement interval: cells replaced at
-                     D_cell = cell_replace_D, bare areas cleaned (reset) at D_bare =
-                     bare_clean_D. Performance = average of the clean and end runs
-                     (linear in D -> exact time average of the saw-tooth).
+  4. degradation     cells replaced at D_cell = cell_replace_D, bare areas cleaned (reset)
+                     at D_bare = bare_clean_D (and at replacements). Performance = average
+                     over every cycle of the life: the clean run averaged with a run at twice
+                     the lifetime-mean D's (exact for performance linear in D, incl. a
+                     partial last interval and designs never replaced).
   5. metrics         lifetime capex (initial + cell replacements + bare cleanings, all
                      x (1 + soft costs)), net round-trip efficiency = (AC out - floor and
                      heat-rejection fans) / AC in (incl. hold losses), and the lifetime cost
@@ -83,6 +84,19 @@ OPT_DEFAULTS = {
         'bare_clean_per_stick': 0.0,       # $/stick per bare-area cleaning (tracked; cost TBD)
         'interconnect_per_kW': 150.0,      # $/kW grid connection, sized on max(peak charge, peak output) AC
                                            #   (LBNL: completed storage projects avg ~$151/kW) PLACEHOLDER
+        # liner: grafoil walls (4 x side x L) + CFC floor (side^2 x floor_area_factor: the extra
+        # area covers CFC upper features)
+        'liner_wall_per_m2': 55.0,         # $/m2 grafoil
+        'liner_floor_per_m2': 1000.0,      # $/m2 CFC
+        'liner_floor_area_factor': 2.0,
+        # shades: 8 RGF vanes per stick, full block height; one graphite / CFC axle per vane up through
+        # the top insulation (t_top + shade_axle_extra) to the drive
+        'shade_rgf_per_m3': 15000.0,       # $/m3 rigid graphite felt, machined (PLACEHOLDER)
+        'shade_axle_per_m': 300.0,         # $/m graphite / CFC axle (PLACEHOLDER)
+        'shade_axle_extra': 0.5,           # m axle above the top insulation to the drive
+        'shade_drive': 'linkage',          # 'linkage': 1 motor + linkage per stick | 'per_vane': 1 motor per vane
+        'shade_motor': 1500.0,             # $/motor incl. driver (PLACEHOLDER)
+        'shade_linkage': 2000.0,           # $/stick linkage, 'linkage' drive (PLACEHOLDER)
     },
     'parasitics': {
         # dry cooler fans + coolant pumps, kW_e per kW_th rejected (DIN V 18599 seasonal
@@ -119,10 +133,10 @@ OPT_DEFAULTS = {
 DESIGN_VARS = [
     ('liner_side', 0.20, 0.60, False, 'liner side length [m]'),
     ('ps_frac', 0.0, 1.0, False, 'powerstick side: 0.10 m + frac x (room in liner - 0.10)'),
-    ('L', 3.0, 6.0, False, 'stick length [m]'),
+    ('L', 3.0, 10.0, False, 'stick length [m]'),
     ('H_frac', 0.0, 1.0, False, 'block height: L + frac x (H_max - L)'),
     ('avg_flux', 5.0, 20.0, False, 'cell flux target [W/cm2] (continuous)'),
-    ('shade_8th', 2, 24, True, 'shade thickness i x 1/8 in (1/4 - 3 in)'),
+    ('shade_8th', 2, 48, True, 'shade thickness i x 1/8 in (1/4 - 6 in)'),
     ('t_side', 0.5, 3.0, False, 'tank side insulation [m]'),
     ('t_top', 0.5, 3.0, False, 'tank top insulation [m]'),
     ('T_max_C', 1800.0, 2500.0, False, 'block T_max [C] (capped at geometry.T_cap_C); T_min from shade-open sizing'),
@@ -213,6 +227,50 @@ def design_cfg(base_cfg, d, opt):
     t['P_rated'], t['duration_hr'] = opt['P_rated'], opt['duration_hr']
     t['block_axial_losses'] = True
     return cfg
+
+
+def lifetime_mean_D(dep_life, d_rep, d_cln, n=200001):
+    """Cycle-averaged deposit [nm] on the cells and on the bare area over the life.
+    dep_life: deposit over the life with no resets; cells reset every d_rep, bare area every
+    d_cln and at each cell replacement. Deposit is linear in cycles, so a uniform grid in
+    deposit is a uniform grid in cycles."""
+    if dep_life <= 0:
+        return 0.0, 0.0
+    x = np.linspace(0.0, dep_life, n)
+    dc = np.mod(x, d_rep) if d_rep > 0 else x
+    db = np.mod(dc, d_cln) if d_cln > 0 else dc
+    return float(dc.mean()), float(db.mean())
+
+
+def liner_shade_costs(m, t_top, cost):
+    """Per-stick liner and shade hardware cost [$] for a built model m (build_tinless).
+    Liner: grafoil walls 4 x side x L at liner_wall_per_m2, CFC floor side^2 x
+    liner_floor_area_factor at liner_floor_per_m2. Shade: 8 RGF vanes (width = vane length
+    l, thickness t) over the full block height, an axle per vane through the top
+    insulation, and the drive (one motor per vane, or one motor + linkage per stick)."""
+    s, L, H = m.liner_side_len, m.L, m.H_block
+    liner = (cost['liner_wall_per_m2'] * 4 * s * L
+             + cost['liner_floor_per_m2'] * cost['liner_floor_area_factor'] * s ** 2) if m.liner_bool else 0.0
+    out = dict(liner=liner, shade=0.0, shade_rgf_m3=0.0, shade_parts={})
+    if not m.shade_bool:
+        return out
+    lay = m.vane_lay
+    l = lay['l'] if lay is not None else m.shade_side_len / (1 + np.sqrt(2))   # octagon panel width
+    t = lay['t'] if lay is not None else m.shade_thickness
+    n = 8
+    V = n * l * t * H
+    drive = cost.get('shade_drive', 'linkage')
+    if drive == 'per_vane':
+        c_drive = n * cost['shade_motor']
+    elif drive == 'linkage':
+        c_drive = cost['shade_motor'] + cost['shade_linkage']
+    else:
+        raise ValueError(f"costs.shade_drive must be 'linkage' or 'per_vane', not {drive!r}")
+    parts = dict(rgf=cost['shade_rgf_per_m3'] * V,
+                 axles=n * cost['shade_axle_per_m'] * (t_top + cost['shade_axle_extra']),
+                 drive=c_drive)
+    out.update(shade=sum(parts.values()), shade_rgf_m3=V, shade_parts=parts)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -416,8 +474,13 @@ def evaluate_design(d, base_cfg, opt):
     n_reset = _n_events(dep_life, d_cln)                       # bare resets, incl. at replacements
     n_clean = sum(1 for k in range(1, n_reset + 1)
                   if abs(k * d_cln / d_rep - round(k * d_cln / d_rep)) > 1e-6)   # cleanings alone
-    D_c = min(d_rep, dep_life) / dep['d_dead_nm']              # end-of-interval states
-    D_b = min(d_cln, dep_life) / dep['d_dead_nm']
+    # Performance over the life = the average over every cycle. Deposition grows linearly with
+    # cycles; cell D saw-tooths (reset at replacements), bare D too (reset at cleanings and at
+    # replacements), with a partial last interval. Performance ~linear in D, so the clean run
+    # averaged with one run at TWICE the lifetime-mean D's gives the lifetime average exactly.
+    Dc_mean, Db_mean = lifetime_mean_D(dep_life, d_rep, d_cln)
+    D_c = 2 * Dc_mean / dep['d_dead_nm']
+    D_b = 2 * Db_mean / dep['d_dead_nm']
     # 3. tank: pass 1 (clean) for the side + edge share, then sized on the clean AC stick
     st_f = dataclasses.replace(st_f, A_hcav_default=math.pi * hs['r_cav'] ** 2)   # searched cavity -> tank layout
     t1 = tk.tank_system(st_f, cfg['tank'])
@@ -428,7 +491,7 @@ def evaluate_design(d, base_cfg, opt):
     tank = tk.tank_system(st_size, cfg['tank'])
     hz, geo, c = tank.hz, tank.geo, tank.cfg
     N = hz.N_ps
-    # 4. end of a replacement interval (no new deposition in this run)
+    # 4. lifetime-average equivalent state (no new deposition in this run)
     if max(D_c, D_b) > 1e-4:
         _, r_d, st_d, md = _discharge(cfg, opt, degradation=dict(cell=D_c, bare=D_b, emis_end=dep['emis_end']),
                                       deposition=False)
@@ -455,7 +518,7 @@ def evaluate_design(d, base_cfg, opt):
     t_hold = cycle_hr - hs['t_charge'] - t_dis
     if cycle_hr - hs['t_charge'] - max(t_dis_f, t_dis_d) < 0:
         viol['cycle_time'] = (hs['t_charge'] + max(t_dis_f, t_dis_d)) / cycle_hr - 1
-    # 5. energy per cycle [J], interval-average cells
+    # 5. energy per cycle [J], lifetime-average cells
     T_max_C = st_f.T_max
     T_mid = 0.5 * (st_f.T_min + st_f.T_max)
     L_mid = tk.losses(T_mid, T_mid, T_mid, geo, hz, tank.cols, c)
@@ -481,6 +544,7 @@ def evaluate_design(d, base_cfg, opt):
     A_cell_cm2 = 4 * ps.width * m.L * (1 - ps.f_bare) * 1e4
     cell_cost = cost['cell_per_cm2'] * A_cell_cm2
     stick_cost = cell_cost + cost['stick_per_m'] * m.L + cost['stick_fixed']
+    ls = liner_shade_costs(m, cfg['tank']['t_top'], cost)
     P_heat_kW = hs['P_heater'] / 1e3
     P_ac_peak = N * max(mf['P_elec_peak'], md['P_elec_peak']) * eo
     inv_kW = max(opt['P_rated'], P_ac_peak) / 1e3
@@ -491,6 +555,8 @@ def evaluate_design(d, base_cfg, opt):
         'tank (containment, insulation, supports, foundation)': tank.cost['total'][1],
         'storage graphite': tank.cost['storage_graphite'][1],
         'powersticks': N * stick_cost,
+        'liners (grafoil walls, CFC floor)': N * ls['liner'],
+        'shades (RGF vanes, axles, drives)': N * ls['shade'],
         'heaters': N * (cost['heater_fixed'] + cost['charge_electrics_per_kW'] * P_heat_kW),
         'inverters': cost['inverter_per_kW'] * inv_kW,
         'grid interconnect': cost['interconnect_per_kW'] * ic_kW,
@@ -522,7 +588,8 @@ def evaluate_design(d, base_cfg, opt):
         t_charge_hr=hs['t_charge'], t_hold_hr=t_hold, heater_area_ratio=hs['ar'], heater_cavity_D=2 * hs['r_cav'],
         side_edge_frac=pf, loss_pct_day=tank.loss_cycle['Q_total'] * 86400 / hz.E_th * 100,
         Q_rej_peak_kW=Q_rej_peak / 1e3, inverter_kW=inv_kW, interconnect_kW=ic_kW, P_charge_ac_kW=P_chg_ac / 1e3,
-        r_in=m.r_in, r_out=m.r_out,
+        r_in=m.r_in, r_out=m.r_out, liner_cost=ls['liner'], shade_cost=ls['shade'],
+        shade_rgf_m3=ls['shade_rgf_m3'], shade_parts=ls['shade_parts'],
         flux_fresh=mf, flux_deg=md, tank_warnings=tank.warnings,
     )
     return out
@@ -636,10 +703,11 @@ def summary(res):
         f"Grid: pitch {res['pitch']:.3f} m, graphite walls " + ', '.join(f"{k} {v*1e3:.0f}" for k, v in res['webs'].items())
         + " mm (stick cavities at 45 deg)",
         f"Cycle: charge {res['t_charge_hr']:.1f} h, hold {res['t_hold_hr']:.1f} h, discharge {res['t_discharge_hr']:.1f} h clean / "
-        f"{res['t_discharge_deg_hr']:.1f} h end of interval; energy vs target {res['energy_mismatch']*100:+.1f}% (clean); "
+        f"{res['t_discharge_deg_hr']:.1f} h at 2x life-mean wear; energy vs target {res['energy_mismatch']*100:+.1f}% (clean); "
         f"losses {res['loss_pct_day']:.2f} %/day",
-        f"Per stick: {res['E_stick_fresh_kWh']:,.0f} kWh clean -> {res['E_stick_deg_kWh']:,.0f} kWh at D_cell "
-        f"{res['D_cell_end']:.2f} / D_bare {res['D_bare_end']:.2f}; deposition {res['dep_nm_per_cycle']*1e3:.2f} pm/cycle",
+        f"Per stick: {res['E_stick_fresh_kWh']:,.0f} kWh clean, {0.5*(res['E_stick_fresh_kWh']+res['E_stick_deg_kWh']):,.0f} kWh "
+        f"life average ({res['E_stick_deg_kWh']:,.0f} kWh at D_cell {res['D_cell_end']:.3f} / D_bare "
+        f"{res['D_bare_end']:.3f} = 2x life-mean wear); deposition {res['dep_nm_per_cycle']*1e3:.2f} pm/cycle",
         f"Maintenance: {res['n_rep']} cell replacements (every {res['rep_interval_yr']:.1f} yr), "
         f"{res['n_clean']} bare-area cleanings besides (every {res['clean_interval_yr']:.1f} yr)",
         f"Flux (clean): {ff.get('frac_above', 0)*100:.0f}% of stick-in time above target, {ff.get('frac_band', 0)*100:.0f}% at "

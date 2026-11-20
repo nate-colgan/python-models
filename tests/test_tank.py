@@ -198,8 +198,8 @@ def test_optimizer_decode_valid_and_roundtrip():
         assert d['L'] <= d['H_block'] <= g['H_max'] + 1e-12
         assert 1600 - 1e-9 <= d['T_max_C'] <= g['T_cap_C'] + 1e-9
         assert 5.0 <= d['avg_flux'] <= 20.0
-        n8 = d['shade_thickness'] / (0.0254 / 8)                 # whole 1/8 in, 1/4 - 3 in
-        assert abs(n8 - round(n8)) < 1e-9 and 2 <= round(n8) <= 24
+        n8 = d['shade_thickness'] / (0.0254 / 8)                 # whole 1/8 in, 1/4 - 6 in
+        assert abs(n8 - round(n8)) < 1e-9 and 2 <= round(n8) <= 48
         x2 = O.encode(d, opt)
         d2 = O.decode(x2, opt)
         for k in ('liner_side', 'ps_side', 'L', 'avg_flux', 'shade_thickness', 'T_max_C', 't_side', 't_top'):
@@ -277,3 +277,14 @@ def test_cavity_webs():
     _, w0 = cavity_webs(r_in, r_out, r_h, rotated=False)
     assert abs(w0['stick-stick'] - math.sqrt(2) * (p - S)) < 1e-12
     assert w['stick-stick'] > w0['stick-stick'] and w['stick-heater'] < w0['stick-heater']
+
+
+def test_lifetime_mean_D():
+    """Cycle-average deposit over the life: saw-tooth with a partial last interval."""
+    from thermal.optimize import lifetime_mean_D
+    dc, db = lifetime_mean_D(0.4, 1.0, 0.1)                  # never replaced: mean = half the end
+    assert abs(dc - 0.2) < 1e-6 and abs(db - 0.05) < 1e-4
+    dc, db = lifetime_mean_D(1.85, 1.0, 0.1)                 # one full interval + 0.85 of the next
+    assert abs(dc - (1 * 0.5 + 0.85 * 0.425) / 1.85) < 1e-5
+    assert abs(db - 0.05) < 1e-3
+    assert lifetime_mean_D(0.0, 1.0, 0.1) == (0.0, 0.0)

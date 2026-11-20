@@ -403,3 +403,87 @@ def plot_layout(res, axes=None, n=4, rot=45.0):
                  f"adiabatic r_out in place of the grid's symmetry lines", fontsize=10)
     fig.tight_layout(rect=(0, 0.13, 1, 0.95))
     return fig, axes
+
+
+def plot_timeseries(cy):
+    """Temperatures, powers and discharge flux / shade over the cycle, one stick + one
+    heater cell (charge: heater cell; discharge: stick cell). -> (fig, axes)"""
+    import matplotlib.pyplot as plt
+    from .sizing import cell_flux
+    rc, rd, m = cy.r_chg, cy.r_dis, cy.m
+    tc = np.asarray(rc['time']) / 3600
+    kc = tc <= cy.t_charge_hr + 1e-9
+    t1 = cy.t_charge_hr + cy.t_hold_hr                       # discharge starts here
+    on = np.asarray(rd['ps_active'], bool)
+    td = np.asarray(rd['time'])[on] / 3600 + t1
+    t_end = t1 + cy.t_discharge_hr
+
+    def C(T):
+        return np.asarray(T, float) - C2K
+
+    fig, ax = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
+    a = ax[0]
+    a.plot(tc[kc], C(rc['T_heater'])[kc], c='C3', label='heater')
+    a.plot(tc[kc], C(rc['T_inner'])[kc], c='C1', label='cavity wall')
+    a.plot(tc[kc], C(rc['T_avg'])[kc], c='k', label='block average')
+    a.plot(tc[kc], C(rc['T_outer'])[kc], c='C0', label='block outer')
+    a.plot([cy.t_charge_hr, t1], [cy.T_max_C] * 2, c='k')
+    a.plot(td, C(rd['T_inner'])[on], c='C1')
+    a.plot(td, C(rd['T_avg'])[on], c='k')
+    a.plot(td, C(rd['T_outer'])[on], c='C0')
+    if m.liner_bool:
+        a.plot(td, C(rd['T_liner'])[on], c='C2', label='liner')
+    a.set_ylabel('°C'); a.set_title('Temperatures (charge: heater cell; discharge: stick cell)')
+
+    a = ax[1]
+    a.plot(tc[kc], np.asarray(rc['Q_heater'])[kc] / 1e3, c='C3', label='heater power')
+    a.plot(tc[kc], np.asarray(rc['Q_sink'])[kc] / 1e3, c='C7', label='roof + floor loss (per cell)')
+    a.plot([cy.t_charge_hr, t1], [cy.hold_loss_W / cy.N / 1e3] * 2, c='C3', ls='--',
+           label='hold: heater makes up all losses')
+    a.plot(td, np.asarray(rd['Q_rad'])[on] / 1e3, c='C1', label='heat into stick')
+    a.plot(td, np.asarray(rd['Q_cell'])[on] / 1e3, c='C4', label='absorbed by active cells')
+    a.plot(td, np.asarray(rd['P_elec'])[on] / 1e3, c='C2', label='electricity (DC)')
+    a.plot(td, np.asarray(rd['Q_sink'])[on] / 1e3, c='C7')
+    a.set_ylabel('kW per stick / heater'); a.set_yscale('symlog', linthresh=10); a.set_title('Power')
+
+    a = ax[2]
+    a.plot(td, cell_flux(m, rd)[on], c='C0', label='cell flux')
+    a.axhline(m.avg_flux, c='C0', ls=':', lw=1, label='target flux')
+    a.set_ylabel('W/cm2'); a.set_title('Discharge: cell flux and shade')
+    a2 = a.twinx()
+    a2.plot(td, np.asarray(rd['f_shade'])[on], c='C1', label='shade closed fraction')
+    a2.set_ylabel('shade closed fraction'); a2.set_ylim(0, 1.05)
+    a2.legend(loc='upper right', fontsize=8)
+    for a in ax:
+        for x in (cy.t_charge_hr, t1, t_end):
+            a.axvline(x, c='0.6', lw=.8, ls='--')
+        a.grid(alpha=.3); a.legend(loc='upper left', fontsize=8)
+    ax[-1].set_xlabel('time in cycle [h]  (charge | hold | discharge)')
+    fig.tight_layout()
+    return fig, ax
+
+
+LEDGER_COLOURS = {'power electronics': 'C3', 'insulation: charge': 'C0', 'insulation: hold': 'C9',
+                  'insulation: discharge': 'C5', 'stick': 'C1', 'parasitics': 'C4', 'residual': '0.6'}
+
+
+def plot_losses(cy):
+    """Ledger as % of AC bought (bars) and by group (donut). -> (fig, axes)"""
+    import matplotlib.pyplot as plt
+    cols = LEDGER_COLOURS
+    rows = [r for r in cy.ledger if r[0] != 'output']
+    fig, ax = plt.subplots(1, 2, figsize=(16, 6), gridspec_kw={'width_ratios': [3, 2]})
+    lab = [f"{g}: {l}" for g, l, _ in rows]
+    pct = np.array([v for _, _, v in rows]) / cy.AC_in * 100
+    ax[0].barh(lab, pct, color=[cols.get(g, 'k') for g, _, _ in rows])
+    for i, p in enumerate(pct):
+        ax[0].text(max(p, 0) + 0.3, i, f"{p:.1f}%", va='center', fontsize=8)
+    ax[0].invert_yaxis(); ax[0].set_xlabel('% of AC bought'); ax[0].grid(alpha=.3, axis='x')
+    ax[0].set_title(f"Where the electricity goes: net out {cy.RTE*100:.1f}%")
+    g = sorted(cy.groups.items(), key=lambda kv: -kv[1])
+    ax[1].pie([max(v, 0) for _, v in g], labels=[f"{k}\n{v/cy.AC_in*100:.1f}%" for k, v in g],
+              colors=[cols.get(k, 'C2') for k, _ in g], startangle=90, counterclock=False,
+              wedgeprops=dict(width=.45), textprops=dict(fontsize=8))
+    ax[1].set_title(f"AC in {cy.AC_in*J_MWh:,.0f} MWh / cycle")
+    fig.tight_layout()
+    return fig, ax
