@@ -24,7 +24,7 @@ One design = one call of `evaluate(x, base_cfg, opt)`:
 
 Optimized variables (DESIGN_VARS) are reparameterised so every point in the box is a
 valid geometry: powerstick side as a fraction of what fits in the liner, block height as
-a fraction between L and H_max. T_min and the swing are outputs of the sizing; T_min >=
+a fraction between L + min_lower_zone and H_max. T_min and the swing are outputs of the sizing; T_min >=
 T_min_floor_C and swing_min <= swing <= swing_max are constraints.
 
 Objective: minimise lifetime cost = lifetime capex + lifetime cost of the energy lost,
@@ -118,7 +118,9 @@ OPT_DEFAULTS = {
     'geometry': {
         'ps_liner_gap': 0.02,     # m min clearance powerstick -> liner, each side
         'heater_min_gap': 0.25,   # m min radial clearance heater -> cavity wall
-        'H_max': 12.0,            # m block height upper bound
+        'H_max': 14.0,            # m block height upper bound
+        'min_lower_zone': 0.25,   # m block always this much taller than the stick: a floor below the stick,
+                                  #   liner bottom + RGF pad and radiation through the lower zone are always modelled
         'T_cap_C': 2500.0,        # C block T_max cap (heater max 2600 C)
         'T_min_floor_C': 1400.0,  # C lowest allowed T_min (constraint; T_min is a sizing output)
         'min_wall': 0.30,         # m min graphite wall between neighbouring cavities (constraint);
@@ -134,11 +136,12 @@ DESIGN_VARS = [
     ('liner_side', 0.20, 0.60, False, 'liner side length [m]'),
     ('ps_frac', 0.0, 1.0, False, 'powerstick side: 0.10 m + frac x (room in liner - 0.10)'),
     ('L', 3.0, 10.0, False, 'stick length [m]'),
-    ('H_frac', 0.0, 1.0, False, 'block height: L + frac x (H_max - L)'),
+    ('H_frac', 0.0, 1.0, False, 'block height: L + dz_min + frac x (H_max - L - dz_min)'),
     ('avg_flux', 5.0, 20.0, False, 'cell flux target [W/cm2] (continuous)'),
     ('shade_8th', 2, 48, True, 'shade thickness i x 1/8 in (1/4 - 6 in)'),
     ('t_side', 0.5, 3.0, False, 'tank side insulation [m]'),
     ('t_top', 0.5, 3.0, False, 'tank top insulation [m]'),
+    ('L_bot', 2.0, 4.0, False, 'bottom stack under the hot zone (support columns + Thermax) [m]'),
     ('T_max_C', 1800.0, 2500.0, False, 'block T_max [C] (capped at geometry.T_cap_C); T_min from shade-open sizing'),
 ]
 VAR_NAMES = [v[0] for v in DESIGN_VARS]
@@ -167,13 +170,12 @@ def decode(x, opt):
     ps_hi = min(0.40, liner - 2 * g['ps_liner_gap'])
     ps = 0.10 + v['ps_frac'] * max(ps_hi - 0.10, 0.0)
     L = v['L']
-    H = L + v['H_frac'] * max(g['H_max'] - L, 0.0)
-    if H - L < 0.25:                       # a lower zone needs room for the liner bottom
-        H = L
+    dz0 = g.get('min_lower_zone', 0.25)           # always a lower zone (floor, liner bottom, pad)
+    H = L + dz0 + v['H_frac'] * max(g['H_max'] - L - dz0, 0.0)
     flux = float(v['avg_flux'])
     shade_t = int(round(v['shade_8th'])) * INCH / 8
     return dict(liner_side=liner, ps_side=ps, L=L, H_block=H, avg_flux=flux, shade_thickness=shade_t,
-                t_side=v['t_side'], t_top=v['t_top'], T_max_C=min(v['T_max_C'], g['T_cap_C']))
+                t_side=v['t_side'], t_top=v['t_top'], L_bot=v['L_bot'], T_max_C=min(v['T_max_C'], g['T_cap_C']))
 
 
 def encode(design, opt):
@@ -182,8 +184,10 @@ def encode(design, opt):
     liner, L = design['liner_side'], design['L']
     ps_hi = min(0.40, liner - 2 * g['ps_liner_gap'])
     x = [liner, (design['ps_side'] - 0.10) / max(ps_hi - 0.10, 1e-9), L,
-         (design['H_block'] - L) / max(g['H_max'] - L, 1e-9), design['avg_flux'],
-         round(design['shade_thickness'] / (INCH / 8)), design['t_side'], design['t_top'], design['T_max_C']]
+         (design['H_block'] - L - g.get('min_lower_zone', 0.25))
+         / max(g['H_max'] - L - g.get('min_lower_zone', 0.25), 1e-9), design['avg_flux'],
+         round(design['shade_thickness'] / (INCH / 8)), design['t_side'], design['t_top'],
+         design.get('L_bot', 2.0), design['T_max_C']]
     return np.clip(np.array(x, float), [b[0] for b in BOUNDS], [b[1] for b in BOUNDS])
 
 
@@ -194,7 +198,7 @@ def design_from_cfg(cfg):
     return dict(liner_side=p['liner_side_len'], ps_side=p['side_len'], L=L,
                 H_block=float(s.get('block_height') or L), avg_flux=float(s['avg_flux']),
                 shade_thickness=float(sh.get('thickness', 0.0254)), t_side=float(t.get('t_side', 1.0)),
-                t_top=float(t.get('t_top', 1.0)),
+                t_top=float(t.get('t_top', 1.0)), L_bot=float(t.get('L_bot', 2.0)),
                 T_max_C=float(s['T_min']) - C2K + float(s['block_temp_range']),
                 T_min_guess_C=float(s['T_min']) - C2K)
 
@@ -224,6 +228,8 @@ def design_cfg(base_cfg, d, opt):
     rad['vf_cache_dir'] = None                 # every design is a new geometry
     t = cfg.setdefault('tank', {})
     t['t_side'], t['t_top'] = d['t_side'], d['t_top']
+    if 'L_bot' in d:                           # older logged designs have no L_bot: YAML value
+        t['L_bot'] = d['L_bot']
     t['P_rated'], t['duration_hr'] = opt['P_rated'], opt['duration_hr']
     t['block_axial_losses'] = True
     return cfg
@@ -388,15 +394,17 @@ def discharge_metrics(m, r, opt):
     E_sink = float((w * np.asarray(r['Q_sink'][1:], float)).sum())     # roof + floor losses, stick in
     if T_on <= 0:
         return dict(Q_rej_peak=0.0, E_rej=0.0, P_elec_peak=0.0, t_on_hr=0.0, E_rad=0.0, E_sink=0.0,
-                    E_released=0.0)
+                    E_released=0.0, E_cell=0.0, E_el=0.0)
     tol = opt.get('flux_band_tol', 0.005)
     above, below = q > q_t * (1 + tol), q < q_t * (1 - tol)
     band = ~above & ~below
-    E_el = float((w * P_el).sum())
+    E_el = float((w * P_el).sum())                                      # DC
+    E_cell = float((w * np.asarray(r['Q_cell'][1:], float)).sum())     # absorbed by the active cells
     mean = float((w * q).sum() / T_on)
     return dict(
         Q_rej_peak=float(Q_rej[on].max()), E_rej=float((w * Q_rej).sum()), P_elec_peak=float(P_el[on].max()),
         t_on_hr=T_on / 3600, flux_target=q_t, E_rad=E_rad, E_sink=E_sink, E_released=E_rad + E_sink,
+        E_cell=E_cell, E_el=E_el,
         frac_above=float((w * above).sum() / T_on), frac_band=float((w * band).sum() / T_on),
         frac_below=float((w * below).sum() / T_on),
         E_frac_above=float((w * P_el * above).sum() / E_el), E_frac_below=float((w * P_el * below).sum() / E_el),
@@ -507,7 +515,7 @@ def evaluate_design(d, base_cfg, opt):
     if geo.H_tank > lim['H_tank_max']:
         viol['H_tank'] = geo.H_tank / lim['H_tank_max'] - 1
     fl = tank.floor_design
-    T_lim = c['floor']['T_limit_annexM']
+    T_lim = tk.floor_limit(c)                    # floor design limit (else API 650 Annex M)
     if max(fl['T_floor_max'], fl['T_floor_col']) > T_lim:
         viol['floor_T'] = max(fl['T_floor_max'], fl['T_floor_col']) / T_lim - 1
     if tank.foundation_pressure > c['soil_allowable']:
@@ -536,6 +544,11 @@ def evaluate_design(d, base_cfg, opt):
     E_rej_fan = par['heat_rejection_kWe_per_kWth'] * N * 0.5 * (mf['E_rej'] + md['E_rej'])
     E_net = E_out - E_floor_fan - E_rej_fan
     RTE, RTE_gross = E_net / E_in, E_out / E_in
+    # average cell efficiency = DC / heat absorbed by the active cells, life average; the
+    # absorbed heat is scaled to the plant like the output (side + edge share)
+    E_abs = mf['E_cell'] + md['E_cell']
+    eta_cell = (mf['E_el'] + md['E_el']) / E_abs if E_abs > 0 else np.nan
+    E_cell_abs = N * (1 - pf) * 0.5 * E_abs
     rte_min = (opt.get('objective') or {}).get('rte_min', 0.0) or 0.0
     if RTE < rte_min:
         viol['rte'] = 1 - RTE / rte_min
@@ -578,7 +591,8 @@ def evaluate_design(d, base_cfg, opt):
         capex_total=capex_total, capex0=capex0, capex_lines=lines,
         rep_cost=rep_cost, n_rep=n_rep, rep_interval_yr=per_yr(d_rep), n_clean=n_clean,
         clean_interval_yr=per_yr(d_cln), clean_cost=clean_cost, D_cell_end=D_c, D_bare_end=D_b,
-        RTE=RTE, RTE_gross=RTE_gross, E_out_MWh=E_out * MWh, E_net_MWh=E_net * MWh, E_in_MWh=E_in * MWh,
+        RTE=RTE, RTE_gross=RTE_gross, eta_cell=eta_cell, RTE_frac_cell=RTE / eta_cell,
+        E_cell_abs_MWh=E_cell_abs * MWh, E_dc_MWh=E_out / eo * MWh, E_out_MWh=E_out * MWh, E_net_MWh=E_net * MWh, E_in_MWh=E_in * MWh,
         E_hold_MWh=E_hold_heat * MWh / eco['eta_in'], E_floor_fan_MWh=E_floor_fan * MWh,
         E_rej_fan_MWh=E_rej_fan * MWh, P_floor_fan_kW=P_floor_fan / 1e3,
         N_ps=N, D_hot=hz.D_hot, D_tank=geo.D_tank, H_tank=geo.H_tank,
@@ -588,6 +602,8 @@ def evaluate_design(d, base_cfg, opt):
         t_charge_hr=hs['t_charge'], t_hold_hr=t_hold, heater_area_ratio=hs['ar'], heater_cavity_D=2 * hs['r_cav'],
         side_edge_frac=pf, loss_pct_day=tank.loss_cycle['Q_total'] * 86400 / hz.E_th * 100,
         Q_rej_peak_kW=Q_rej_peak / 1e3, inverter_kW=inv_kW, interconnect_kW=ic_kW, P_charge_ac_kW=P_chg_ac / 1e3,
+        T_floor_max_C=fl['T_floor_max'], T_floor_col_C=fl['T_floor_col'], v_air=c['floor']['v_air'],
+        foundation_kPa=tank.foundation_pressure / 1e3,
         r_in=m.r_in, r_out=m.r_out, liner_cost=ls['liner'], shade_cost=ls['shade'],
         shade_rgf_m3=ls['shade_rgf_m3'], shade_parts=ls['shade_parts'],
         flux_fresh=mf, flux_deg=md, tank_warnings=tank.warnings,
@@ -688,7 +704,8 @@ def summary(res):
     d = res['design']
     L = [f"Design: liner {d['liner_side']*1e3:.0f} mm, powerstick {d['ps_side']*1e3:.0f} mm, L {d['L']:.2f} m, "
          f"block H {d['H_block']:.2f} m, flux {d['avg_flux']:.1f} W/cm2, shade {d['shade_thickness']/INCH:.2f} in, "
-         f"insulation side {d['t_side']:.2f} / top {d['t_top']:.2f} m, T_max {d['T_max_C']:.0f} C"]
+         f"insulation side {d['t_side']:.2f} / top {d['t_top']:.2f} m, bottom stack {d.get('L_bot', float('nan')):.2f} m, "
+         f"T_max {d['T_max_C']:.0f} C"]
     if res.get('error'):
         return '\n'.join(L + [f"FAILED: {res['error']}"])
     h = res.get('heater', {})
@@ -702,6 +719,9 @@ def summary(res):
         f"(area_ratio {res['heater_area_ratio']:.2f})",
         f"Grid: pitch {res['pitch']:.3f} m, graphite walls " + ', '.join(f"{k} {v*1e3:.0f}" for k, v in res['webs'].items())
         + " mm (stick cavities at 45 deg)",
+        *([f"Floor (design-day air {res.get('v_air', float('nan')):.0f} m/s): max {res['T_floor_max_C']:.0f} C, "
+           f"column hot spot {res['T_floor_col_C']:.0f} C; foundation {res['foundation_kPa']:.0f} kPa"]
+          if 'T_floor_col_C' in res else []),
         f"Cycle: charge {res['t_charge_hr']:.1f} h, hold {res['t_hold_hr']:.1f} h, discharge {res['t_discharge_hr']:.1f} h clean / "
         f"{res['t_discharge_deg_hr']:.1f} h at 2x life-mean wear; energy vs target {res['energy_mismatch']*100:+.1f}% (clean); "
         f"losses {res['loss_pct_day']:.2f} %/day",
@@ -716,7 +736,7 @@ def summary(res):
         f"Per cycle: out {res['E_out_MWh']:,.0f} MWh AC - fans {res['E_floor_fan_MWh']:,.1f} floor / "
         f"{res['E_rej_fan_MWh']:,.1f} heat rejection = {res['E_net_MWh']:,.0f} MWh net; in {res['E_in_MWh']:,.0f} MWh "
         f"(hold {res['E_hold_MWh']:,.0f})",
-        f"Round trip: {res['RTE']*100:.1f}% net ({res['RTE_gross']*100:.1f}% before fans); energy lost over the "
+        f"Round trip: {res['RTE']*100:.1f}% net ({res['RTE_gross']*100:.1f}% before parasitic loads); energy lost over the "
         f"life ${res['loss_cost']/1e6:,.1f}M",
         f"Capex ${res['capex0']/1e6:.1f}M initial (incl. soft costs): " + ', '.join(
             f"{k.split(' (')[0]} ${v/1e6:.1f}M" for k, v in res['capex_lines'].items())

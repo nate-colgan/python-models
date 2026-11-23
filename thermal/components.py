@@ -633,6 +633,16 @@ class StorageModule:
             return np.full(self.num_ax_segments, float(self.segment_length))
         return np.diff(edges)
 
+    def wall_half_resistance(self, T_wall_node):
+        """Conduction resistance [K/W] per ring from the cavity surface (r_in) to the centre
+        of the first radial node (r_in + dr/2): ln((r_in + dr/2) / r_in) / (2 pi k dz), k at
+        the node temperature. The surface temperature is T_s = T_node + R Q_in (Q_in = heat
+        into the block at the wall, W)."""
+        r_in = self.block.rad_in
+        dr = (self.block.rad_out - r_in) / self.num_rad_segments
+        k = _vprop(storage_tcx, np.asarray(T_wall_node, float))
+        return np.log((r_in + 0.5 * dr) / r_in) / (2 * np.pi * k * self.axial_dz())
+
     def update_temps(self, init_temp_dist: np.ndarray, Q_rad: np.ndarray, time_step: float,
                      sub_steps: int, T_sur: float, block_heat_loss: bool,
                      auto_substep: bool = True, safety: float = 0.9, dQ_dTw=None, Q_out=None):

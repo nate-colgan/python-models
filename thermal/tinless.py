@@ -561,11 +561,36 @@ class TinlessSimulation:
         _ps_active   = True
         t_ps_removed = None
 
+        # Wall surface vs first-node temperature: the radiation sees the cavity SURFACE,
+        # half a radial cell (dr/2) outboard of the first node centre, through the
+        # half-cell conduction resistance R_w (StorageModule.wall_half_resistance):
+        #   T_s = T_c - R_w Q_out(T_s).
+        # Each step the radiation is solved at a surface estimate from the previous step's
+        # wall heat (T_g = T_c - R_w Q_prev; the vane control acts there) and the series
+        # coupling is solved with the radiation linearised about T_g:
+        #   (I + R_w D) T_s = T_c - R_w Q0 + R_w D T_g,   Q_wall = Q0 + D (T_s - T_g),
+        #   dQ_wall/dT_c = D (I + R_w D)^-1      (D = dQ_out/dT_wall of the radiation solve)
+        # Q_wall and its sensitivity go to the implicit wall update (axial model only).
+        _ax_model = getattr(self, 'axial_model', None)
+        _Q_out_prev = np.asarray(Q0, float).copy()
+        T_wall_arr = [float(T[:, 0] @ _wz)]
+
         while t < end_time:
             T = storage.block.temp_dist
 
-            if _ps_active:
+            if _ps_active and _ax_model is not None:
+                _R_w = storage.wall_half_resistance(T[:, 0])
+                _T_g = T.copy()
+                _T_g[:, 0] = T[:, 0] - _R_w * _Q_out_prev
+                f_shade, (Q_rad, Q_elec, Q_cell, Q_waste, T_liner) = self._radiation_step(_T_g, _use_shade)
+                _D = np.asarray(_ax_model.last['dQ_dTw'], float)
+                _M = np.eye(n_ax) + _R_w[:, None] * _D
+                _T_s = np.linalg.solve(_M, T[:, 0] - _R_w * Q_rad + _R_w * (_D @ _T_g[:, 0]))
+                _Q_wall = Q_rad + _D @ (_T_s - _T_g[:, 0])
+                _D_eff = _D @ np.linalg.inv(_M)
+            elif _ps_active:
                 f_shade, (Q_rad, Q_elec, Q_cell, Q_waste, T_liner) = self._radiation_step(T, _use_shade)
+            if _ps_active:
                 if t < dt_short_duration:
                     dt = dt_short
                 elif self.shade_bool and f_shade == self.f_shade_max:
@@ -588,16 +613,18 @@ class TinlessSimulation:
                 _st     = {k: np.full(n_ax, np.nan)
                            for k in ('T_liner_out', 'T_foil_inner', 'T_sh_in', 'T_sh_out')}
 
-            _ax = getattr(self, 'axial_model', None)
             _Qs = None if Q_sink_fn is None else np.asarray(Q_sink_fn(T), float)
-            if _ax is not None and _ps_active:
+            if _ax_model is not None and _ps_active:
                 T_new, _, _ = storage.update_temps(
-                    T, -Q_rad, dt, sub_steps, self.T_sur, self.block_heat_loss,
-                    dQ_dTw=-_ax.last['dQ_dTw'], Q_out=_Qs)
+                    T, -_Q_wall, dt, sub_steps, self.T_sur, self.block_heat_loss,
+                    dQ_dTw=-_D_eff, Q_out=_Qs)
+                _Q_out_prev = -np.asarray(storage.last_Q_wall, float)    # applied wall heat, step mean
+                _T_wall_new = float((T_new[:, 0] - storage.wall_half_resistance(T_new[:, 0]) * _Q_out_prev) @ _wz)
             else:
                 T_new, _, _ = storage.update_temps(
                     T, -Q_rad, dt, sub_steps, self.T_sur, self.block_heat_loss, Q_out=_Qs
                 )
+                _T_wall_new = float(T_new[:, 0] @ _wz)
             storage.block.temp_dist = T_new
             t += dt
 
@@ -618,6 +645,7 @@ class TinlessSimulation:
             Q_elec_arr.append(Q_elec.sum())
             T_avg_arr.append(_Tavg(T_new))
             T_inner_arr.append(float(T_new[:, 0] @ _wz))
+            T_wall_arr.append(_T_wall_new)
             T_outer_arr.append(float(T_new[:, -1] @ _wz))
             T_liner_arr.append(T_liner.mean())
             T_liner_out_arr.append(np.nanmean(_st['T_liner_out']))
@@ -680,6 +708,7 @@ class TinlessSimulation:
             'P_elec':         np.array(Q_elec_arr),
             'T_avg':          np.array(T_avg_arr),
             'T_inner':        np.array(T_inner_arr),
+            'T_wall':         np.array(T_wall_arr),     # cavity surface (first node - half-cell drop)
             'T_outer':        np.array(T_outer_arr),
             'T_liner':        np.array(T_liner_arr),
             'T_liner_out':    np.array(T_liner_out_arr),
@@ -734,14 +763,26 @@ class TinlessSimulation:
         A_gr_seg = np.pi * 2.0 * r_in * seg_len
         eps_h    = heater.emissivity
 
+        # The heater radiates to the cavity SURFACE, half a radial cell (dr/2) inboard of the
+        # first node centre T_c: T_s = T_c + R_w Q (R_w = StorageModule.wall_half_resistance,
+        # held per step). Per ring, Newton on f(T_s) = T_s - T_c - R_w G (T_h^4 - T_s^4) = 0
+        # with G = sigma A_h / R_enc (graphite emissivity at T_c).
+        _R_w = [None]
+
         def _q_segs(T_h, T_inner_arr):
-            Q_seg = np.zeros(n_ax)
-            for i in range(n_ax):
-                eps_gr   = gr_emis(T_inner_arr[i])
-                R_enc    = ((1.0 - eps_h) / eps_h + 1.0
-                            + (A_h_seg[i] / A_gr_seg[i]) * (1.0 - eps_gr) / eps_gr)
-                Q_seg[i] = sigma * (T_h**4 - T_inner_arr[i]**4) * A_h_seg[i] / R_enc
-            return Q_seg
+            T_c = np.asarray(T_inner_arr, float)
+            eps_gr = gr_emis(T_c)
+            R_enc = (1.0 - eps_h) / eps_h + 1.0 + (A_h_seg / A_gr_seg) * (1.0 - eps_gr) / eps_gr
+            G = sigma * A_h_seg / R_enc
+            R = _R_w[0] if _R_w[0] is not None else np.zeros(n_ax)
+            T_s = T_c.copy()
+            for _ in range(30):
+                f = T_s - T_c - R * G * (T_h ** 4 - T_s ** 4)
+                d = f / (1.0 + 4.0 * R * G * T_s ** 3)
+                T_s = T_s - d
+                if np.max(np.abs(d)) < 1e-6:
+                    break
+            return G * (T_h ** 4 - T_s ** 4)
 
         def _total_q(T_h, T_inner_arr):
             return float(_q_segs(T_h, T_inner_arr).sum())
@@ -787,6 +828,7 @@ class TinlessSimulation:
         _Tavg = lambda T_d: float((T_d * _W).sum())
 
         T        = storage.block.temp_dist.copy()
+        _R_w[0]  = storage.wall_half_resistance(T[:, 0])
         T_h_0, _ = _solve_T_heater(T[:, 0])
 
         n_steps    = int(end_time / dt)
@@ -804,6 +846,7 @@ class TinlessSimulation:
         temp_snaps   = [T.copy()]
 
         for step in range(n_steps):
+            _R_w[0] = storage.wall_half_resistance(T[:, 0])
             T_h, Q_segs = _solve_T_heater(T[:, 0])
             _Qs = None if Q_sink_fn is None else np.asarray(Q_sink_fn(T), float)
             T_new, _, _ = storage.update_temps(

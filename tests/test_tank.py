@@ -195,10 +195,11 @@ def test_optimizer_decode_valid_and_roundtrip():
         x[O.INTEGRALITY] = np.round(x[O.INTEGRALITY])
         d = O.decode(x, opt)
         assert 0.10 - 1e-12 <= d['ps_side'] <= d['liner_side'] - 2 * g['ps_liner_gap'] + 1e-12
-        assert d['L'] <= d['H_block'] <= g['H_max'] + 1e-12
+        assert d['L'] + g['min_lower_zone'] - 1e-12 <= d['H_block'] <= g['H_max'] + 1e-12
         assert 1600 - 1e-9 <= d['T_max_C'] <= g['T_cap_C'] + 1e-9
         assert 5.0 <= d['avg_flux'] <= 20.0
-        n8 = d['shade_thickness'] / (0.0254 / 8)                 # whole 1/8 in, 1/4 - 6 in
+        assert 2.0 <= d['L_bot'] <= 4.0
+        n8 =d['shade_thickness'] / (0.0254 / 8)                 # whole 1/8 in, 1/4 - 6 in
         assert abs(n8 - round(n8)) < 1e-9 and 2 <= round(n8) <= 48
         x2 = O.encode(d, opt)
         d2 = O.decode(x2, opt)

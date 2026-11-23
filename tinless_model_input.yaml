@@ -116,11 +116,18 @@ tank:
   T_air_design: 40.0        # C design-day floor-air inlet (floor check)
   t_side: 1.0               # m Thermax side wall
   t_top: 1.5                # m Thermax roof
-  L_bot: 2.0                # m bottom stack (columns + Thermax)
+  L_bot: 2.0                # m bottom stack (columns + Thermax); an optimizer variable (2-4 m)
   H_wd: null                # m stick withdrawal headspace; null -> L + t_top (assumption)
   H_deck: 2.0               # m deck / structure allowance
   c_shell: 0.05             # m shell clearance
   soil_allowable: 225.0e+3   # Pa
+  foundation:               # foundation pressure = everything over the tank footprint
+    rho_concrete: 2400.0     # kg/m3 structural mat (costs.mat_thickness) + HT slab
+    slab_t: 0.30             # m high-temperature concrete slab (PLACEHOLDER)
+    cellular_glass_t: 0.20   # m (PLACEHOLDER)
+    rho_cellular_glass: 120.0  # kg/m3
+    hung_kg_per_pair: 1500.0   # kg per stick + heater pair hung from the deck (stick, heater, liner,
+                               #   shades, drives) (PLACEHOLDER)
   thermax: {rho: 640.0}     # kg/m3; k(T) in properties.thermax_tcx
   columns:
     thickness: 0.23         # m graphite column thickness (constant); the width varies with height
@@ -145,6 +152,9 @@ tank:
     # Only valid near the v3 column geometry.
     f_3D: 0.85
     plate_area: 0.36         # m2 bearing plate per column (floor hot-spot check)
+    f_foot: 1.21             # column-FOOT heat / 1-D column heat for the floor hot-spot check: the v3 FEA
+                             #   column carries 1.2 kW at the top and 2.1 kW at the foot (it collects heat
+                             #   from the Thermax around it) vs 1.73 kW 1-D. f_3D is for the total only.
   floor:
     plate_t: 0.020          # m steel floor plate
     k_steel: 45.0           # W/m-K
@@ -152,11 +162,14 @@ tank:
     fin_t: 0.010            # m fin thickness
     fin_pitch: 0.14         # m
     channel_clearance: 0.05 # m channel height = fin_h + this
-    v_air: 6.0              # m/s; single pass across the tank (L_flow = D_tank)
+    v_air: 10.0             # m/s; single pass across the tank (L_flow = D_tank); the air warms along the
+                            #   path, so the floor max and column hot spot are checked at the outlet end
     K_minor: 3.0            # minor-loss coefficient
     eta_fan: 0.6
     T_limit_normal: 93.0    # C API 650 base
     T_limit_annexM: 200.0   # C API 650 Annex M
+    T_limit_design: 120.0   # C design limit on floor max + column hot spot (warning + optimizer constraint);
+                            #   below Annex M to keep headroom for a cooling-fan failure. null -> Annex M
   shell:
     h_out: 10.0             # W/m2K shell / deck to ambient (plus radiation)
     emissivity: 0.9         # shell and deck
@@ -175,7 +188,8 @@ tank:
     thermax_per_kg: [1.5, 2.5, 4.0]
     column_graphite_per_kg: [5, 10, 15]       # ISO-68 machined
     oxide_per_kg: [1, 2, 4]
-    bearing_plate: [700, 900, 1100]           # $ per column
+    bearing_plate_t: 0.05                     # m steel bearing plate thickness (area = columns.plate_area)
+    structural_steel_per_kg: [3.0, 5.0, 8.0]  # $/kg fabricated structural steel (bearing plates)
     tie_grid: [700, 1500, 2300]               # $ per column
     floor_per_m2: [720, 935, 1150]            # floor plate upgrade, fins, welds
     slab_per_m2: [330, 470, 610]              # HT concrete, rails, firebrick caps

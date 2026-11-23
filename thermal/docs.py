@@ -70,7 +70,7 @@ def yaml_table(doc, yaml_path, prefix=None, exclude=(), size=8):
             continue
         if v == '' and not c:
             continue
-        note = 'set per design by the optimizer' if k in SET_BY_OPTIMIZER else ''
+        note = 'replaced per design by the optimizer' if k in SET_BY_OPTIMIZER else ''
         rows.append([k, v, c, (note, {'color': DIM, 'italic': True}) if note else ''])
     doc.table(['YAML key', 'value', 'meaning (YAML comment)', ''], rows, widths=[1.9, 0.9, 3.3, 1.0], size=size)
 
@@ -131,8 +131,10 @@ def sec_optimizer(doc, opt):
     g = opt['geometry']
     doc.p("Decoding (optimize.decode):")
     doc.eq(r's_{ps} = 0.10 + \phi_{ps}\,\left(\min(0.40,\; s_{liner} - 2g_{ps}) - 0.10\right),\qquad '
-           r'H = L + \phi_H\,(H_{max} - L)\;\;(H = L\ \mathrm{if}\ H - L < 0.25\,\mathrm{m})')
-    doc.p(f"with g_ps = {g['ps_liner_gap']} m (minimum stick-to-liner clearance) and H_max = {g['H_max']} m. "
+           r'H = L + \Delta_0 + \phi_H\,(H_{max} - L - \Delta_0)')
+    doc.p(f"with g_ps = {g['ps_liner_gap']} m (minimum stick-to-liner clearance), H_max = {g['H_max']} m and "
+          f"Delta_0 = min_lower_zone = {g.get('min_lower_zone', 0.25)} m (there is always a lower zone: a floor below "
+          f"the stick, the liner bottom and pad, and radiation through the lower zone). "
           f"T_max is capped at {g['T_cap_C']:.0f} C. T_min and the swing are not variables: they come out of the "
           "shade-open sizing (section 6.5).")
 
@@ -165,7 +167,7 @@ def sec_optimizer(doc, opt):
         ['graphite wall between any two cavities', f"{g['min_wall']} m", '(min_wall - wall) / min_wall'],
         ['plant energy >= P_rated x duration (clean)', f"within {opt['sizing']['tol_t']:.0%}", '-mismatch'],
         ['tank diameter / height', f"{lim['D_tank_max']:g} / {lim['H_tank_max']:g} m", 'value / limit - 1'],
-        ['floor temperature (API 650 Annex M)', 'tank.floor.T_limit_annexM', 'T / limit - 1'],
+        ['floor max / column hot spot <= floor design limit', 'tank.floor.T_limit_design (else Annex M)', 'T / limit - 1'],
         ['foundation pressure', 'tank.soil_allowable', 'p / allowable - 1'],
         ['charge + discharge fit in the cycle', f"{8760 / opt['economics']['cycles_per_year']:.0f} h", 'excess'],
         ['net RTE >= rte_min (optional)', f"{opt['objective']['rte_min']}", '1 - RTE / rte_min'],
@@ -223,7 +225,7 @@ def sec_optimizer(doc, opt):
           "dithered in [0.5, 1.0) each generation, crossover probability 0.7, Sobol initial population, deferred "
           "updating (the whole generation is evaluated in parallel, then the population is updated), integer handling "
           "for the shade thickness (integrality), no polishing, the YAML design as one initial member (x0). Population "
-          "= popsize x 9 variables; stop after maxiter generations or when the population's objective spread "
+          "= popsize x " + str(len(O.DESIGN_VARS)) + " variables; stop after maxiter generations or when the population's objective spread "
           "std(f) <= tol x |mean(f)| (tol = 1e-3). Designs are evaluated in a process pool (one thread per worker).")
     doc.p("Typical settings in the notebook: WORKERS 20, POPSIZE 10 (90 designs per generation), MAXITER 25, SEED 0; "
           "one design takes about 1-2 min on one core (screening settings), so a run is roughly 2-4 hours.")

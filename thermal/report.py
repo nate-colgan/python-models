@@ -85,6 +85,7 @@ DESC = {
     'geometry.ps_liner_gap': ('m', 1, 'min powerstick -> liner clearance per side'),
     'geometry.heater_min_gap': ('m', 1, 'min heater -> cavity wall clearance'),
     'geometry.H_max': ('m', 1, 'block height upper bound'),
+    'geometry.min_lower_zone': ('m', 1, 'block always this much taller than the stick (lower zone)'),
     'geometry.T_cap_C': ('C', 1, 'max block temperature'),
     'geometry.T_min_floor_C': ('C', 1, 'lowest allowed T_min (constraint)'),
     'geometry.min_wall': ('m', 1, 'min graphite wall between neighbouring cavities (constraint)'),
@@ -110,6 +111,7 @@ VAR_PHYS = {
     'shade_8th': ('shade_thickness', 'in', 1 / INCH, '.3f'),
     't_side': ('t_side', 'm', 1, '.2f'),
     't_top': ('t_top', 'm', 1, '.2f'),
+    'L_bot': ('L_bot', 'm', 1, '.2f'),
     'T_max_C': ('T_max_C', 'C', 1, '.0f'),
 }
 
@@ -117,7 +119,7 @@ VAR_PHYS = {
 SET_BY_OPTIMIZER = {
     'end_time', 'storage.L', 'storage.block_height', 'storage.avg_flux', 'storage.duration_hr', 'storage.T_min',
     'storage.block_temp_range', 'storage.num_ax_segments', 'storage.num_rad_segments', 'storage.volume_factor',
-    'powerstick.liner_side_len', 'powerstick.side_len', 'shade.thickness', 'tank.t_side', 'tank.t_top',
+    'powerstick.liner_side_len', 'powerstick.side_len', 'shade.thickness', 'tank.t_side', 'tank.t_top', 'tank.L_bot',
     'tank.P_rated', 'tank.duration_hr', 'heater.area_ratio', 'radiation.vane_rays', 'radiation.vf_cache_dir',
 }
 
@@ -351,6 +353,9 @@ def _key_results(doc, b, ctx):
     ]
     if cy is not None:
         rows.append(('Full-cycle check (detailed settings, clean cells)', f"net RTE {cy.RTE * 100:.1f}%"))
+    for k, p in _rte_parts(b, cy).items():
+        rows.append((f"RTE / average cell efficiency ({k})",
+                     f"{p['frac'] * 100:.1f}% (RTE {p['RTE'] * 100:.1f}% / cell {p['eta'] * 100:.1f}%)"))
     doc.kv(rows)
 
 
@@ -398,15 +403,19 @@ def _design(doc, b):
         ('Sticks / heaters', f"{b['N_ps']} / {b['N_ps']}"),
         ('Hot zone diameter', f"{b['D_hot']:.1f} m"),
         ('Tank', f"{b['D_tank']:.1f} m dia x {b['H_tank']:.1f} m tall"),
-        ('Insulation side / top', f"{d['t_side']:.2f} m / {d['t_top']:.2f} m"),
+        ('Insulation side / top / bottom stack', f"{d['t_side']:.2f} m / {d['t_top']:.2f} m / "
+                                                 f"{d.get('L_bot', float('nan')):.2f} m"),
+        ('Floor (design-day air)', f"max {b.get('T_floor_max_C', float('nan')):.0f} C, column hot spot "
+                                   f"{b.get('T_floor_col_C', float('nan')):.0f} C at {b.get('v_air', float('nan')):.0f} m/s; "
+                                   f"foundation {b.get('foundation_kPa', float('nan')):.0f} kPa"),
         ('Inverters / interconnect', f"{b['inverter_kW'] / 1e3:.1f} MW / {b['interconnect_kW'] / 1e3:.1f} MW "
                                      f"(charging draw {b['P_charge_ac_kW'] / 1e3:.1f} MW)"),
     ])
     doc.h2('Performance (life average)')
     doc.kv([
-        ('Net round-trip efficiency', f"{b['RTE'] * 100:.2f}% (before fans {b['RTE_gross'] * 100:.2f}%)"),
+        ('Net round-trip efficiency', f"{b['RTE'] * 100:.2f}% (before parasitic loads {b['RTE_gross'] * 100:.2f}%)"),
         ('AC bought per cycle', f"{b['E_in_MWh']:,.0f} MWh (of which hold losses {b['E_hold_MWh']:,.0f} MWh)"),
-        ('AC sold per cycle', f"{b['E_out_MWh']:,.0f} MWh gross, {b['E_net_MWh']:,.0f} MWh net of fans"),
+        ('AC sold per cycle', f"{b['E_out_MWh']:,.0f} MWh gross, {b['E_net_MWh']:,.0f} MWh net of parasitic loads"),
         ('Fans per cycle', f"floor cooling {b['E_floor_fan_MWh']:.1f} MWh, heat rejection {b['E_rej_fan_MWh']:.1f} MWh"),
         ('Cycle', f"charge {b['t_charge_hr']:.1f} h, hold {b['t_hold_hr']:.1f} h, discharge {b['t_discharge_hr']:.1f} h "
                   f"clean / {b['t_discharge_deg_hr']:.1f} h at 2x life-mean wear"),
@@ -440,7 +449,7 @@ def _cycle(doc, cy):
     J = 1 / 3.6e9
     s = cy.cfg['storage']
     doc.kv([
-        ('Net round-trip efficiency (clean cells)', f"{cy.RTE * 100:.1f}% ({cy.RTE_gross * 100:.1f}% before fans)"),
+        ('Net round-trip efficiency (clean cells)', f"{cy.RTE * 100:.1f}% ({cy.RTE_gross * 100:.1f}% before parasitic loads)"),
         ('AC in / net out per cycle', f"{A * J:,.0f} / {cy.net * J:,.0f} MWh"),
         ('Cycle', f"{cy.cycle_hr:.0f} h = charge {cy.t_charge_hr:.1f} + hold {cy.t_hold_hr:.1f} + "
                   f"discharge {cy.t_discharge_hr:.1f} h"),
@@ -457,6 +466,197 @@ def _cycle(doc, cy):
         last = g
     doc.table(['group', 'where the electricity goes', 'MWh / cycle', 'kWh / stick', '% of AC in'], rows,
               widths=[1.5, 2.6, 1.0, 1.0, 1.0])
+
+
+def _png(fig, out_dir, fname):
+    """Render a report-made figure to PNG (also saved to <run dir>/figures) and close it."""
+    import matplotlib.pyplot as plt
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    png = buf.getvalue()
+    fdir = os.path.join(out_dir, 'figures')
+    os.makedirs(fdir, exist_ok=True)
+    with open(os.path.join(fdir, f"{fname}.png"), 'wb') as fh:
+        fh.write(png)
+    return png
+
+
+def _rte_parts(b, cy):
+    """RTE = delivery x eta_cell x out, with eta_cell = DC / absorbed by the active cells,
+    delivery = absorbed / AC bought, out = net AC / DC (inverter + parasitic loads); for the life
+    average (optimizer record, if it has the cell energies) and the clean full cycle.
+    -> {label: dict}"""
+    out = {}
+    if b is not None and 'E_cell_abs_MWh' in b and np.isfinite(b.get('eta_cell', np.nan)):
+        out['life average (optimizer, screening)'] = dict(
+            RTE=b['RTE'], eta=b['eta_cell'], frac=b['RTE_frac_cell'],
+            deliv=b['E_cell_abs_MWh'] / b['E_in_MWh'], out=b['E_net_MWh'] / b['E_dc_MWh'])
+    if cy is not None and hasattr(cy, 'E_cell_abs'):
+        out['clean cells, full cycle (detailed)'] = dict(
+            RTE=cy.RTE, eta=cy.eta_cell, frac=cy.RTE_frac_cell,
+            deliv=cy.E_cell_abs / cy.AC_in, out=cy.net / cy.DC)
+    return out
+
+
+def _liner_trajectory(cy):
+    """Stick-in discharge steps of the full cycle: axial-mean liner inner-face temperature
+    [C], instantaneous cell efficiency P_elec / Q_cell, DC energy per step [J]."""
+    r = cy.r_dis
+    on = np.asarray(r['ps_active'][1:], bool)
+    dt = np.diff(np.asarray(r['time'], float))
+    Q = np.asarray(r['Q_cell'][1:], float)
+    P = np.asarray(r['P_elec'][1:], float)
+    T = np.asarray(r['T_liner'][1:], float)[: len(Q)] - C2K
+    ok = on & (Q > 0)
+    return T[ok], P[ok] / Q[ok], (P * dt)[ok], np.asarray(r['time'][1:], float)[ok] / 3600
+
+
+def _cell_efficiency(doc, b, cy, rows, cfg, out_dir):
+    import matplotlib.pyplot as plt
+    from .properties import panel_efficiency, _PANEL_EFF_COEFFS
+    doc.para("Average cell efficiency here = DC out / heat absorbed by the active cells, over the discharge. "
+             "RTE / cell efficiency is the fraction of the cells' own efficiency that the plant keeps; it splits "
+             "exactly into RTE = delivery x cell efficiency x output, with delivery = heat absorbed by the active "
+             "cells / AC bought (heater supply, insulation losses, absorption on bare and inactive area) and "
+             "output = net AC / DC (inverter and parasitic loads: floor-cooling and heat-rejection fans, pumps).")
+    parts = _rte_parts(b, cy)
+    if not parts:
+        doc.para("The optimizer record has no cell energies (run before they were logged) and no full cycle was "
+                 "run, so this section is empty.", color=WARN)
+        return
+    cols = list(parts)
+    lab = [('Net round-trip efficiency', 'RTE', '%'), ('Average cell efficiency, DC / absorbed', 'eta', '%'),
+           ('RTE / cell efficiency', 'frac', '%'),
+           ('  delivery: absorbed by active cells / AC bought', 'deliv', '%'),
+           ('  output: net AC / DC (inverter + parasitic loads)', 'out', '%')]
+    doc.table(['quantity'] + cols, [[(n, {'bold': True}) if k == 'frac' else n]
+                                    + [(f"{parts[c][k] * 100:.1f}%", {'bold': True} if k == 'frac' else {})
+                                       for c in cols] for n, k, _ in lab],
+              widths=[2.8] + [(doc.width - 2.8) / len(cols)] * len(cols))
+    if b is not None and 'E_cell_abs_MWh' not in b:
+        doc.para("The optimizer record of this run has no cell energies (logged from 2026-11-23 on), so only the "
+                 "full-cycle column is shown and the population statistics below are not available.",
+                 size=9, color=DIM)
+
+    pop = [r for r in rows if r.get('feasible') and 'E_cell_abs_MWh' in r and np.isfinite(r.get('eta_cell', np.nan))]
+    if pop:
+        top = sorted(pop, key=lambda r: r['lifetime_cost'])[:10]
+
+        def st(rs, k):
+            v = np.array([r[k] for r in rs]) * 100
+            return f"{v.min():.1f} / {np.median(v):.1f} / {v.max():.1f}%"
+        doc.h2('Across the run (feasible designs, life average)')
+        doc.table(['quantity', f"all feasible (n = {len(pop):,}): min / median / max",
+                   f"10 best: min / median / max"],
+                  [[n, st(pop, k), st(top, k)] for n, k in
+                   (('RTE / cell efficiency', 'RTE_frac_cell'), ('Average cell efficiency', 'eta_cell'),
+                    ('Net RTE', 'RTE'))], widths=[2.0, 2.6, doc.width - 4.6])
+
+    # figure 1: decomposition of the optimum + the run's designs on RTE vs cell efficiency
+    key = cols[-1]
+    p = parts[key]
+    fig, ax = plt.subplots(1, 2, figsize=(11, 4.2), gridspec_kw=dict(width_ratios=[1.1, 1]))
+    a = ax[0]
+    steps = [('AC bought', 1.0), ('absorbed by active cells', p['deliv']), ('DC out', p['deliv'] * p['eta']),
+             ('net AC out (= RTE)', p['RTE'])]
+    y = np.arange(len(steps))[::-1]
+    a.barh(y, [v * 100 for _, v in steps], color=['#9aa5b1', '#5b8fc7', '#2f6aa8', '#1f3f8f'], height=0.6)
+    for yi, (n, v) in zip(y, steps):
+        a.text(v * 100 + 1, yi, f"{v * 100:.1f}%", va='center', fontsize=9)
+    for (yi, (_, v0)), (_, v1), f in zip(zip(y, steps), steps[1:], ('delivery', 'cell efficiency', 'inverter + parasitic loads')):
+        a.annotate(f"x {v1 / v0:.3f} ({f})", xy=(102, yi - 0.5), fontsize=8, color='#555555', va='center')
+    a.set_yticks(y, [n for n, _ in steps])
+    a.set_xlim(0, 135)
+    a.set_xlabel('% of AC bought')
+    a.set_title(f"Optimum ({key.split(' (')[0]}): RTE = {p['frac'] * 100:.1f}% of cell efficiency", fontsize=10)
+    a.grid(alpha=.3, axis='x')
+    a = ax[1]
+    if pop:
+        e = np.array([r['eta_cell'] for r in pop]) * 100
+        R = np.array([r['RTE'] for r in pop]) * 100
+        c = np.array([r['lifetime_cost'] for r in pop]) / 1e6
+        sc = a.scatter(e, R, c=c, s=10, cmap='viridis_r', alpha=.7, lw=0)
+        fig.colorbar(sc, ax=a, label='lifetime cost [$M]')
+    pts = [(parts[k]['eta'] * 100, parts[k]['RTE'] * 100, k) for k in cols]
+    for (xe, yr, k), mk in zip(pts, ('*', 'D')):
+        a.plot(xe, yr, mk, ms=12 if mk == '*' else 7, mfc='#d43c2c' if mk == '*' else 'white', mec='#d43c2c',
+               mew=1.5, ls='none', label=f"optimum: {k}")
+    lo_x = min([x for x, _, _ in pts] + ([e.min()] if pop else [])) - 2
+    hi_x = max([x for x, _, _ in pts] + ([e.max()] if pop else [])) + 2
+    lo_y = min([y for _, y, _ in pts] + ([R.min()] if pop else [])) - 2
+    hi_y = max([y for _, y, _ in pts] + ([R.max()] if pop else [])) + 2
+    xs = np.array([lo_x, hi_x])
+    for f in np.arange(0.50, 1.0, 0.05):
+        if f * hi_x < lo_y or f * lo_x > hi_y:
+            continue                                    # line not in view
+        a.plot(xs, f * xs, ls=':', c='#888888', lw=1)
+        xl, yl = (hi_x, f * hi_x) if f * hi_x <= hi_y else (hi_y / f, hi_y)    # where it leaves the box
+        a.text(xl, yl, f"{f:.0%} ", fontsize=8, color='#666666', ha='right', va='top' if yl == hi_y else 'bottom')
+    a.set_xlim(lo_x, hi_x)
+    a.set_ylim(lo_y, hi_y)
+    a.set_xlabel('average cell efficiency, DC / absorbed [%]')
+    a.set_ylabel('net RTE [%]')
+    a.set_title('Net RTE vs cell efficiency' + (' (feasible, life average)' if pop else ''), fontsize=10)
+    a.legend(fontsize=8, loc='lower right')
+    a.grid(alpha=.3)
+    fig.tight_layout()
+    doc.figure(_png(fig, out_dir, 'rte_vs_cell_efficiency'),
+               "Left: the optimum's round trip as a chain, RTE = delivery x cell efficiency x output (inverter + parasitic loads). Right: net RTE "
+               "against average cell efficiency; dotted lines = constant RTE / cell efficiency.", 'rte_vs_cell_efficiency')
+
+    # figure 2: cell efficiency vs liner temperature (the fit the model uses)
+    bg = float(cfg['emissivity_tables'][0]['value'][0][0][1])
+    _ce = _PANEL_EFF_COEFFS[bg]
+    flux_t = float((b or {}).get('design', {}).get('avg_flux', cfg['storage']['avg_flux']))
+    T = np.array([])
+    if cy is not None:
+        T, eff, E, th = _liner_trajectory(cy)
+    fig, axs = plt.subplots(1, 2 if len(T) else 1, figsize=(11, 4.4) if len(T) else (7, 4.4), squeeze=False)
+    rows_t = []
+    for i, a in enumerate(axs[0]):
+        zoom = i == 1
+        if zoom:
+            pad = max(25.0, 0.3 * (T.max() - T.min()))
+            TC = np.linspace(T.min() - pad, T.max() + pad, 200)
+        else:
+            TC = np.linspace(1000, 2600, 400)
+        a.plot(TC, panel_efficiency(bg, TC + C2K) * 100, c='#555555', lw=2, label='fit, no flux derate')
+        for fl, ls in ((flux_t, '-'), (2 * flux_t, '--')):
+            a.plot(TC, panel_efficiency(bg, TC + C2K, flux=fl) * 100, c='#2f6aa8', lw=2, ls=ls,
+                   label=f"fit at {fl:.1f} W/cm2" + (' (flux target)' if fl == flux_t else ''))
+        if len(T):
+            a.axvspan(T.min(), T.max(), color='#f2c14e', alpha=.2, lw=0, label='liner range, optimum discharge')
+        if zoom:
+            sc = a.scatter(T, eff * 100, c=th, s=14, cmap='plasma', zorder=3, lw=0,
+                           label='optimum, clean discharge: step values')
+            fig.colorbar(sc, ax=a, label='hours into discharge')
+            a.set_title('Zoom on the operating range', fontsize=10)
+        else:
+            a.set_title(f"Fit used in the model (band gap {bg:g} um)", fontsize=10)
+            a.legend(fontsize=8, loc='lower center')
+        a.set_xlabel('liner inner-face (emitter) temperature [C]')
+        a.set_ylabel('cell efficiency, DC / absorbed [%]')
+        a.grid(alpha=.3)
+    if len(T):
+        Tm = float((T * E).sum() / E.sum())
+        rows_t = [('Liner inner face during the discharge (axial mean)', f"{T.min():.0f} - {T.max():.0f} C, "
+                                                                        f"output-weighted mean {Tm:.0f} C"),
+                  ('Cell efficiency at the steps (DC / absorbed)', f"{eff.min() * 100:.1f} - {eff.max() * 100:.1f}%"),
+                  ('Peak of the fit (no derate)', f"{-_ce[1] / (2 * _ce[0]) - C2K:.0f} C, "
+                                                  f"{panel_efficiency(bg, -_ce[1] / (2 * _ce[0])) * 100:.1f}%")]
+    fig.tight_layout()
+    doc.h2('Cell efficiency vs liner temperature')
+    doc.para(f"The model's cell efficiency is a quadratic fit in the emitter temperature (the liner inner face; "
+             f"thermal.properties.panel_efficiency, band gap {bg:g} um), derated for flux: "
+             f"eta = eta_0(T) x 0.998^(2 x flux x (1 - eta_0)), then x (1 - D_cell) for deposition wear. "
+             f"The points are the optimum's clean discharge; they sit a little off the target-flux curve because "
+             f"the flux and the liner temperature vary along the stick and over time.")
+    if rows_t:
+        doc.kv(rows_t)
+    doc.figure(_png(fig, out_dir, 'cell_efficiency_vs_liner_T'),
+               "Cell efficiency vs liner inner-face temperature: the fit used in this study (no derate, at the "
+               "optimum's flux target and twice it) and the optimum's discharge steps.", 'cell_efficiency_vs_liner_T')
 
 
 def _verified(doc, ver):
@@ -531,11 +731,52 @@ def _input_tables(doc, opt, opt_inputs, include=None, exclude=()):
         doc.table(['input', 'value', 'unit', 'description', ''], rows, widths=[1.7, 0.8, 0.7, 3.3, 0.6])
 
 
-def _model_settings(doc, cfg):
+DESIGN_KEYS = {'storage.L', 'storage.block_height', 'storage.avg_flux', 'powerstick.liner_side_len',
+               'powerstick.side_len', 'shade.thickness', 'tank.t_side', 'tank.t_top', 'tank.L_bot'}
+SIZED_KEYS = {'storage.T_min', 'storage.block_temp_range', 'storage.volume_factor', 'heater.area_ratio',
+              'heater.max_power'}
+
+
+def as_run_cfg(base_cfg, best, opt):
+    """Model config of the optimum as the optimizer ran it (optimize.design_cfg with the
+    screening fidelity, plus the sizing outputs: T_min / swing / volume factor from the
+    shade-open sizing, heater cavity and power from the heater search) and the source of
+    every value. -> (cfg, {dotted key: source})"""
+    from . import optimize as O
+    d = dict(best['design'], T_min_guess_C=best['T_min_C'])
+    cfg = O.design_cfg(base_cfg, d, opt)
+    s, h = cfg['storage'], cfg['heater']
+    s['T_min'] = best['T_min_C'] + C2K
+    s['block_temp_range'] = best['swing']
+    s['volume_factor'] = best['volume_factor']
+    h['area_ratio'] = best['heater_area_ratio']
+    P = (best.get('heater') or {}).get('P_heater')
+    if P is not None:
+        h['max_power'] = P
+    base_flat = _flatten(base_cfg)
+    src = {}
+    for k, v in _flatten(cfg).items():
+        if k in DESIGN_KEYS and not (k == 'tank.L_bot' and 'L_bot' not in best['design']):
+            src[k] = 'design variable'
+        elif k in SIZED_KEYS:
+            src[k] = 'sizing output'
+        elif k not in base_flat or base_flat[k] != v:
+            src[k] = 'optimizer input'
+        else:
+            src[k] = 'YAML'
+    return cfg, src
+
+
+def _model_settings(doc, cfg, src=None):
+    """Switches, emissivity table and every model setting; with src (as_run_cfg) the values
+    are the optimum's as run, labelled by source."""
+    src = src or {}
     flat = _flatten({k: v for k, v in cfg.items() if k != 'emissivity_tables'})
+    lab = lambda k: (src.get(k, 'YAML'), {'color': DIM, 'italic': True}) if src else ''
     doc.h2('Switches')
-    doc.table(['option', 'value'], [[k, (_fmt(v), {'bold': True})] for k, v in flat.items() if isinstance(v, bool)],
-              widths=[3.5, 1.0])
+    doc.table(['option', 'value', 'source'] if src else ['option', 'value'],
+              [[k, (_fmt(v), {'bold': True})] + ([lab(k)] if src else []) for k, v in flat.items()
+               if isinstance(v, bool)], widths=[3.5, 1.0, 1.6] if src else [3.5, 1.0])
     try:
         tab = cfg['emissivity_tables'][0]['value']
         doc.h2('Stick emissivity table')
@@ -543,11 +784,22 @@ def _model_settings(doc, cfg):
                   [[f"{r[0][0]:g} - {r[0][1]:g}", r[1], r[2], r[3]] for r in tab], widths=[1.8, 1.2, 1.2, 1.2])
     except Exception:
         pass
-    doc.h2('All model (YAML) settings')
-    doc.table(['YAML key', 'value', ''],
-              [[k, _fmt(v), ('set per design by the optimizer', {'color': DIM, 'italic': True})
-                if k in SET_BY_OPTIMIZER else ''] for k, v in flat.items() if not isinstance(v, bool)],
-              widths=[3.0, 2.0, 2.1], size=8)
+    if src:
+        doc.h2('All model settings of the optimum, as run')
+        doc.para("Sources: YAML = tinless_model_input.yaml; optimizer input = replaced by the optimizer for every "
+                 "design (targets, screening mesh / rays / timestep limits); design variable = the optimum's value; "
+                 "sizing output = from the shade-open sizing or the heater search. Temperatures in K (model) and C "
+                 "(tank). heater.max_power is the searched heater power (the YAML gives max_power_per_m as the cap).",
+                 size=9, color=DIM)
+        doc.table(['key', 'value', 'source'],
+                  [[k, _fmt(v), lab(k)] for k, v in flat.items() if not isinstance(v, bool)],
+                  widths=[3.0, 2.3, 1.8], size=8)
+    else:
+        doc.h2('All model (YAML) settings')
+        doc.table(['YAML key', 'value', ''],
+                  [[k, _fmt(v), ('replaced per design by the optimizer', {'color': DIM, 'italic': True})
+                    if k in SET_BY_OPTIMIZER else ''] for k, v in flat.items() if not isinstance(v, bool)],
+                  widths=[3.0, 2.0, 2.1], size=8)
 
 
 # --------------------------------------------------------------------------
@@ -609,6 +861,8 @@ def write_report(out_dir, ctx):
                      "sized the same way, clean cells. The optimizer's efficiency is the life average (clean and "
                      "worn cells), so it is a little lower.")
             _cycle(doc, cy)
+        doc.h1(f"{next(sec)}. Round-trip efficiency vs cell efficiency")
+        _cell_efficiency(doc, b, cy, rows, cy.cfg if cy is not None else ctx['base_cfg'], out_dir)
         if ctx.get('verified'):
             doc.h1(f"{next(sec)}. Detailed-settings check of the top designs")
             _verified(doc, ctx['verified'])
@@ -631,14 +885,23 @@ def write_report(out_dir, ctx):
     doc.para("'default' = value from thermal/optimize.py OPT_DEFAULTS, not set in the notebook's OPT_INPUTS.",
              size=9, color=DIM)
     _input_tables(doc, opt, ctx.get('opt_inputs'), exclude=COST_GROUPS)
-    doc.h1(f"{next(sec)}. Model settings (YAML)")
-    _model_settings(doc, ctx['base_cfg'])
+    if best:
+        doc.h1(f"{next(sec)}. Model settings of the optimum (as run)")
+        _model_settings(doc, *as_run_cfg(ctx['base_cfg'], best[0], opt))
+    else:
+        doc.h1(f"{next(sec)}. Model settings (YAML)")
+        _model_settings(doc, ctx['base_cfg'])
     if best:
         doc.h1('Appendix: optimum, full text summary')
         doc.mono(O.summary(best[0]))
 
     path = os.path.join(out_dir, 'report.docx')
-    doc.save(path)
+    try:
+        doc.save(path)
+    except PermissionError:                     # report.docx open in Word: save beside it
+        path = os.path.join(out_dir, f"report_{_dt.datetime.now():%Y%m%d_%H%M%S}.docx")
+        doc.save(path)
+        print(f"report.docx is open (locked by Word?); saved as {os.path.basename(path)} instead")
     with open(os.path.join(out_dir, 'report_inputs.json'), 'w', encoding='utf-8') as fh:
         json.dump(dict(generated=now, code=_git(), run=run, opt=opt, opt_inputs=ctx.get('opt_inputs'),
                        base_yaml=ctx['base_cfg'], best=best[0] if best else None), fh, indent=1, default=str)

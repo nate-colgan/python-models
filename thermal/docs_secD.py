@@ -14,7 +14,7 @@ from .report import _fmt
 
 C2K = 273.15
 DIM = '666666'
-OPT_SET = {'t_side', 't_top', 'P_rated', 'duration_hr', 'block_axial_losses'}
+OPT_SET = {'t_side', 't_top', 'L_bot', 'P_rated', 'duration_hr', 'block_axial_losses'}
 
 # key -> (unit, meaning, used in)
 DESC = {
@@ -485,7 +485,7 @@ COST_LINES = [   # name, quantity basis, rate key, rate unit
     ('Thermax bottom', '(A_hot L_bot - N_col (V_g + V_ox)) rho_thx', 'thermax_per_kg', '$/kg'),
     ('column graphite', 'N_col V_g rho_graphite', 'column_graphite_per_kg', '$/kg'),
     ('oxide posts', 'N_col V_ox rho_oxide', 'oxide_per_kg', '$/kg'),
-    ('bearing plates', 'N_col', 'bearing_plate', '$/column'),
+    ('bearing plates', 'N_col plate_area bearing_plate_t rho_steel', 'structural_steel_per_kg', '$/kg'),
     ('column tie grid', 'N_col', 'tie_grid', '$/column'),
     ('floor plate, fins, welds', 'A_tank', 'floor_per_m2', '$/m2'),
     ('HT slab, rails, firebrick', 'A_tank', 'slab_per_m2', '$/m2'),
@@ -608,11 +608,10 @@ def sec_tank(doc, ctx):
           "code default. Cost rates are listed in section 5.8. The optimizer overwrites t_side, t_top, P_rated, "
           "duration_hr and block_axial_losses for every design (optimize.design_cfg).")
     _inputs_table(doc, c)
-    doc.review(f"The code default floor.T_limit_annexM is {tk.TANK_DEFAULTS['floor']['T_limit_annexM']:.0f} C, but "
-               f"the YAML uses {fl_c['T_limit_annexM']:.0f} C (the value actually used as the optimizer constraint). "
-               "If the YAML key were dropped, the stale default would apply silently. Annex M covers 93-260 C with "
-               "derated allowables, so confirm that the intended basis is 200 C and that the tank-bottom design "
-               "matches it. [confidence high that the two are inconsistent] (tank.py:52, YAML tank.floor)")
+    if tk.TANK_DEFAULTS['floor']['T_limit_annexM'] != fl_c['T_limit_annexM']:
+        doc.review(f"The code default floor.T_limit_annexM is {tk.TANK_DEFAULTS['floor']['T_limit_annexM']:.0f} C, "
+                   f"but the YAML uses {fl_c['T_limit_annexM']:.0f} C. If the YAML key were dropped, the default "
+                   "would apply silently. (tank.py TANK_DEFAULTS, YAML tank.floor)")
     doc.h3('Fixed internal constants and correlations')
     _constants_table(doc)
 

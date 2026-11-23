@@ -193,8 +193,10 @@ def run_cycle(cfg, opt=None, degradation=None, verbose=True, cycle_hr=None, char
     for g, _, v in rows:
         groups[g] = groups.get(g, 0.0) + v
     RTE = net / AC_in
+    eta_cell = E_e / E_cell                          # cell efficiency, DC / absorbed by the active cells
     res = SimpleNamespace(
         RTE=RTE, RTE_gross=DC * eo / AC_in, AC_in=AC_in, net=net, ledger=rows, groups=groups, N=N,
+        DC=DC, E_cell_abs=N * k * E_cell, eta_cell=eta_cell, RTE_frac_cell=RTE / eta_cell,
         t_charge_hr=t_ch / 3600, t_hold_hr=t_hold / 3600, t_discharge_hr=t_dis / 3600, cycle_hr=cycle_hr,
         charge_done=ch['done'], m=m, hm=hm, r_dis=rd, r_chg=rc, stick=st, tank=tank, flux=md,
         T_min_C=T_min_C, T_max_C=T_max_C, hold_loss_W=L_hot['Q_total'], P_floor_fan=L_hot['P_fan'], opt=opt,
@@ -220,7 +222,7 @@ def report(res):
          f"Plant: {res.N} sticks + {res.N} heaters; block {res.T_min_C:.0f}-{res.T_max_C:.0f} C; cycle "
          f"{res.cycle_hr:.1f} h = charge {res.t_charge_hr:.1f} + hold {res.t_hold_hr:.1f} + discharge "
          f"{res.t_discharge_hr:.1f} h" + ('' if res.charge_done else '  (CHARGE INCOMPLETE)'),
-         f"Round trip: {res.RTE*100:.1f}% net ({res.RTE_gross*100:.1f}% before fans);  "
+         f"Round trip: {res.RTE*100:.1f}% net ({res.RTE_gross*100:.1f}% before parasitic loads);  "
          f"AC in {A*J_MWh:,.0f} MWh, net AC out {res.net*J_MWh:,.0f} MWh per cycle",
          "",
          f"{'':24s}{'':38s}{'MWh/cycle':>11s}{'kWh/stick':>11s}{'% of AC in':>11s}"]

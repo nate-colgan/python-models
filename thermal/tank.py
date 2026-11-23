@@ -46,10 +46,25 @@ TANK_DEFAULTS = {
     'thermax': {'rho': 640.0},           # k(T) in properties.thermax_tcx
     'columns': {'pitch': None, 'thickness': 0.23, 'w_max': 0.513, 'w_min': 0.135, 'sigma_ref': 2.81e6, 'T_ref': 2400.0, 'n': 3.8, 'Q_kcal': 50.0,
                 'sigma_cap': 20e6, 'T1': 1200.0, 'sigma_ox': 3.0e6, 'L_graphite': None,
-                'rho_graphite': 1850.0, 'rho_oxide': 3000.0, 'f_3D': 1.0, 'plate_area': 1.0},
+                'rho_graphite': 1850.0, 'rho_oxide': 3000.0, 'f_3D': 0.85, 'plate_area': 0.36,
+                # column heat at the FOOT / 1-D column heat, for the floor hot-spot check: the FEA
+                # column carries 1.2 kW at the top and 2.1 kW at the foot (it collects heat from
+                # the Thermax around it) vs 1.73 kW 1-D -> 2.1 / 1.73 = 1.21 (v3 FEA point).
+                # f_3D (total bottom heat) is not used for the spot.
+                'f_foot': 1.21},
     'floor': {'plate_t': 0.020, 'k_steel': 45.0, 'fin_h': 0.14, 'fin_t': 0.010, 'fin_pitch': 0.14,
               'channel_clearance': 0.05, 'v_air': 6.0, 'K_minor': 3.0, 'eta_fan': 0.6,
-              'T_limit_normal': 93.0, 'T_limit_annexM': 120.0},
+              'T_limit_normal': 93.0, 'T_limit_annexM': 200.0,
+              # design limit on the floor max / column spot (warning + optimizer constraint); None ->
+              # T_limit_annexM. Below Annex M to keep headroom for a cooling-fan failure.
+              'T_limit_design': None},
+    # foundation pressure = everything over the tank footprint, incl. the floor build-up
+    'foundation': {'rho_concrete': 2400.0,      # kg/m3 structural mat (costs.mat_thickness) + HT slab
+                   'slab_t': 0.30,              # m high-temperature concrete slab (PLACEHOLDER)
+                   'cellular_glass_t': 0.20,    # m (PLACEHOLDER)
+                   'rho_cellular_glass': 120.0,  # kg/m3
+                   'hung_kg_per_pair': 1500.0},  # kg per stick + heater pair hung from the deck: stick,
+                                                 #   heater, liner, shades, drives (PLACEHOLDER)
     'shell': {'h_out': 10.0, 'emissivity': 0.9, 'h_headspace': 3.0, 'emis_insulation': 0.9},
     'costs': {
         'steel_per_t': [5000, 7500, 10000], 't_shell': 0.011, 't_bottom': 0.008,
@@ -58,7 +73,9 @@ TANK_DEFAULTS = {
         'gas_tight_fixed': [0.15e6, 0.3e6, 0.45e6], 'per_penetration': [750, 1500, 2250],
         'thermax_per_kg': [1.5, 2.5, 4.0],
         'column_graphite_per_kg': [5, 10, 15], 'oxide_per_kg': [1, 2, 4],
-        'bearing_plate': [700, 900, 1100], 'tie_grid': [700, 1500, 2300],
+        'bearing_plate_t': 0.05,                  # m steel bearing plate thickness (area: columns.plate_area)
+        'structural_steel_per_kg': [3.0, 5.0, 8.0],   # $/kg fabricated structural steel (bearing plates)
+        'tie_grid': [700, 1500, 2300],
         'floor_per_m2': [720, 935, 1150], 'slab_per_m2': [330, 470, 610],
         'cellular_glass_per_m2': [110, 165, 220], 'mat_per_m3': [870, 1300, 1800], 'mat_thickness': 1.0,
         'fans_per_m3s': [7500, 10000, 15000],
@@ -488,13 +505,25 @@ def bottom_heat(cd, A_hot, T_hot, T_floor, c):
     Q_thx = (A_hot - cd.N_col * cd.A_mean) * phi_thermax(T_floor, T_hot) / c['L_bot']
     Q = cd.N_col * Q_col + Q_thx
     return dict(Q_bot=Q, Q_col_each=Q_col, Q_col_total=cd.N_col * Q_col, Q_thx=Q_thx,
-                q_bot=Q / A_hot, col_share=cd.N_col * Q_col / Q, T_joint=Tj)
+                q_bot=Q / A_hot, col_share=cd.N_col * Q_col / Q, T_joint=Tj,
+                Q_col_foot=col.get('f_foot', 1.0) * Q1)      # heat at the column foot (spot check)
 
 
 # --------------------------------------------------------------------------
 # §5.4 finned floor, forced air
 # --------------------------------------------------------------------------
-def floor_air(Q_bot, q_bot, Q_col_each, D_tank, T_in, c):
+def floor_limit(c):
+    """Floor temperature limit used for warnings and the optimizer constraint [C]:
+    floor.T_limit_design if set, else floor.T_limit_annexM."""
+    f = c['floor']
+    return float(f['T_limit_design']) if f.get('T_limit_design') is not None else float(f['T_limit_annexM'])
+
+
+def floor_air(Q_bot, q_bot, Q_col_foot, D_tank, T_in, c):
+    """Finned floor, single pass across the tank (flow length = D_tank). The air warms
+    linearly along the path, so the floor maximum and the column hot spot are at the
+    OUTLET end: T_air,out = T_in + dT_air. Column spot: the column-foot heat (Q_col_foot,
+    f_foot x 1-D) over the bearing plate area, above the background flux q_bot."""
     f = c['floor']
     s = f['fin_pitch'] - f['fin_t']
     H_ch = f['fin_h'] + f['channel_clearance']
@@ -509,7 +538,7 @@ def floor_air(Q_bot, q_bot, Q_col_each, D_tank, T_in, c):
     Vdot = f['v_air'] * D_tank * s * H_ch / f['fin_pitch']
     dT = Q_bot / (AIR['rho'] * Vdot * AIR['cp'])
     T_max = T_in + dT + q_bot / h_eff
-    q_col = Q_col_each / c['columns']['plate_area']
+    q_col = Q_col_foot / c['columns']['plate_area']
     dp = (ff * D_tank / D_h + f['K_minor']) * AIR['rho'] * f['v_air'] ** 2 / 2
     return dict(h=h, Re=Re, eta_fin=eta, h_eff=h_eff, Vdot=Vdot, dT_air=dT,
                 T_floor_avg=T_in + 0.5 * dT + q_bot / h_eff, T_floor_max=T_max,
@@ -521,12 +550,12 @@ def bottom_and_floor(cd, A_hot, D_tank, T_hot, T_in, c, tol=1e-3, max_iter=60, T
     """Bottom stack + floor solved together (floor average = cold face). T_floor pins it."""
     if T_floor is not None:
         b = bottom_heat(cd, A_hot, T_hot, T_floor, c)
-        fl = floor_air(b['Q_bot'], b['q_bot'], b['Q_col_each'], D_tank, T_in, c)
+        fl = floor_air(b['Q_bot'], b['q_bot'], b['Q_col_foot'], D_tank, T_in, c)
         return b, fl, dict(converged=True, n_iter=0, T_floor=T_floor)
     Tf = T_in + 30.0
     for it in range(max_iter):
         b = bottom_heat(cd, A_hot, T_hot, Tf, c)
-        fl = floor_air(b['Q_bot'], b['q_bot'], b['Q_col_each'], D_tank, T_in, c)
+        fl = floor_air(b['Q_bot'], b['q_bot'], b['Q_col_foot'], D_tank, T_in, c)
         if abs(fl['T_floor_avg'] - Tf) < tol:
             return b, fl, dict(converged=True, n_iter=it + 1, T_floor=Tf)
         Tf = fl['T_floor_avg']
@@ -585,7 +614,8 @@ def costs(hz, geo, cd, fl_design, c):
     col = c['columns']
     add('column graphite', cd.N_col * cd.V_g * col['rho_graphite'], k['column_graphite_per_kg'], 'kg')
     add('oxide posts', cd.N_col * cd.V_ox * col['rho_oxide'], k['oxide_per_kg'], 'kg')
-    add('bearing plates', cd.N_col, k['bearing_plate'], 'columns')
+    add('bearing plates', cd.N_col * c['columns']['plate_area'] * k['bearing_plate_t'] * RHO_STEEL,
+        k['structural_steel_per_kg'], 'kg')
     add('column tie grid', cd.N_col, k['tie_grid'], 'columns')
     add('floor plate, fins, welds', A_t, k['floor_per_m2'], 'm2')
     add('HT slab, rails, firebrick', A_t, k['slab_per_m2'], 'm2')
@@ -664,7 +694,8 @@ class TankResult:
         lines += [
             f"Temperatures (peak, design-day air): shell {d['T_shell']:.0f} C, deck {d['T_deck']:.0f} C, "
             f"joint {d['T_joint']:.0f} C, floor avg {fl['T_floor_avg']:.0f} / max {fl['T_floor_max']:.0f} / "
-            f"column spot {fl['T_floor_col']:.0f} C (Annex M limit {self.cfg['floor']['T_limit_annexM']:.0f} C)",
+            f"column spot {fl['T_floor_col']:.0f} C (design limit {floor_limit(self.cfg):.0f} C, Annex M "
+            f"{self.cfg['floor']['T_limit_annexM']:.0f} C)",
             f"Floor air: {fl['Vdot']:.1f} m3/s, dT {fl['dT_air']:.1f} K, h_eff {fl['h_eff']:.1f} W/m2K, "
             f"fan {fl['P_fan'] / 1e3:.1f} kW; peak q_bot {d['q_bot']:.0f} W/m2, cycle {L['q_bot']:.0f} W/m2",
             f"Capex (containment + insulation + supports + foundation): ${lo / 1e6:.1f} / {mid / 1e6:.1f} / "
@@ -710,11 +741,11 @@ def _system(hz, c, T_max, hist=None, stick=None):
     design = losses(T_max, T_max, T_max, geo, hz, cd, c, T_air=c['T_air_design'])
     if not it['converged']:
         warn.append("floor / bottom-stack iteration did not converge")
-    T_lim = c['floor']['T_limit_annexM']          # design basis: API 650 Annex M (Nate, 2026-11-18)
+    T_lim = floor_limit(c)        # design limit (fan-failure headroom), else API 650 Annex M
     if fl['T_floor_max'] > T_lim:
-        warn.append(f"floor max {fl['T_floor_max']:.0f} C > {T_lim:.0f} C (API 650 Annex M)")
+        warn.append(f"floor max {fl['T_floor_max']:.0f} C > {T_lim:.0f} C (floor design limit)")
     if fl['T_floor_col'] > T_lim:
-        warn.append(f"column spot {fl['T_floor_col']:.0f} C > {T_lim:.0f} C (API 650 Annex M; "
+        warn.append(f"column spot {fl['T_floor_col']:.0f} C > {T_lim:.0f} C (floor design limit; "
                     "known fix: concentrate fins under column lines; not modelled)")
     peak = losses(T_max, T_max, T_max, geo, hz, cd, c)
 
@@ -736,8 +767,15 @@ def _system(hz, c, T_max, hist=None, stick=None):
 
     cost = costs(hz, geo, cd, fl, c)
     w = cost['weights']
-    W = (hz.m_graphite + 1e3 * (w['thermax_t'] + w['column_graphite_t'] + w['oxide_t'] + w['steel_t'] + w['deck_t'])
-) * G
+    fd, fl_c = c['foundation'], c['floor']
+    m_floor_m2 = (fd['rho_concrete'] * (c['costs']['mat_thickness'] + fd['slab_t'])        # mat + HT slab
+                  + fd['rho_cellular_glass'] * fd['cellular_glass_t']
+                  # floor plate beyond the tank bottom already in steel_t, + fins
+                  + RHO_STEEL * (max(fl_c['plate_t'] - c['costs']['t_bottom'], 0.0)
+                                 + fl_c['fin_h'] * fl_c['fin_t'] / fl_c['fin_pitch']))
+    m_hung = fd['hung_kg_per_pair'] * hz.N_ps
+    W = (hz.m_graphite + m_hung + m_floor_m2 * geo.A_tank
+         + 1e3 * (w['thermax_t'] + w['column_graphite_t'] + w['oxide_t'] + w['steel_t'] + w['deck_t'])) * G
     p_found = W / geo.A_tank
     if p_found > c['soil_allowable']:
         warn.append(f"foundation pressure {p_found / 1e3:.0f} kPa > soil allowable {c['soil_allowable'] / 1e3:.0f} kPa")
