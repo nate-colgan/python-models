@@ -28,6 +28,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from .build import build_heater
+from .heater import describe as describe_heater
 from .sizing import run_discharge
 from . import tank as tk
 
@@ -68,7 +69,7 @@ def run_cycle(cfg, opt=None, degradation=None, verbose=True, cycle_hr=None, char
     is not enough.
     -> SimpleNamespace(RTE, ledger, groups, N, times, runs, tank, cfg (as run), ...)"""
     from . import optimize as O
-    opt = O.merge(O.OPT_DEFAULTS, opt or {})
+    opt = O.apply_scenario(O.merge(O.OPT_DEFAULTS, opt or {}))     # cost scenario: efficiencies, parasitics
     eco, par = opt['economics'], opt['parasitics']
     c = copy.deepcopy(cfg)
     if degradation:
@@ -112,7 +113,7 @@ def run_cycle(cfg, opt=None, degradation=None, verbose=True, cycle_hr=None, char
     if hs is not None and hs['ok']:
         hm, rc, ch = _charge(m, c, end_hr, P=hs['P_heater'])
         say(f"heater sized: {hs['P_heater']/1e3:,.0f} kW, cavity Ø{2*hm.r_in*1e3:.0f} mm "
-            f"(area_ratio {hs['ar']:.2f}), charge {ch['t_charge']/3600:.1f} h")
+            f"(area_ratio {hs['ar']:.2f}), charge {ch['t_charge']/3600:.1f} h; element {describe_heater(hm.element)}")
     else:
         hm, rc, ch = _charge(m, c, end_hr)                   # at the power cap
     if (hs is None or not hs['ok']) and charge_hr and ch['done'] and ch['t_charge'] < charge_hr * 3600:
@@ -283,7 +284,9 @@ def plot_layout(res, axes=None, n=4, rot=45.0):
     ps = float(m.powerstick.width)
     liner = float(p_['liner_side_len']) if m.liner_bool else None
     t_l = float(p_.get('liner_thickness', 0.0) or 0.0)
-    hs = float(h['side_len'])
+    el = hm.element
+    tube = el['type'] == 'tube'
+    hs = float(el['D']) if tube else float(el['A_cross']) ** 0.5     # tube OD or rod side
     S = np.pi * m.r_in / 2                                    # square stick cavity (r_in = 2 S / pi)
     r_hc = float(hm.r_in)
     lb = m.liner_bottom
@@ -337,7 +340,8 @@ def plot_layout(res, axes=None, n=4, rot=45.0):
                 ap.add_patch(Polygon(shapes['stick'] + xy, fc=col['stick'], ec='k', lw=.5, zorder=4))
             else:                                              # heater
                 ap.add_patch(Circle(xy, r_hc, fc=col['cavity'], ec='k', lw=.6, zorder=1))
-                ap.add_patch(Rectangle(xy - hs / 2, hs, hs, fc=col['heater'], ec='k', lw=.5, zorder=4))
+                ap.add_patch(Circle(xy, hs / 2, fc=col['heater'], ec='k', lw=.5, zorder=4) if tube else
+                             Rectangle(xy - hs / 2, hs, hs, fc=col['heater'], ec='k', lw=.5, zorder=4))
     ap.add_patch(Circle((0, 0), m.r_out, fc='none', ec=col['cell_s'], ls='--', lw=1.6, zorder=5))
     ap.add_patch(Circle((pitch, 0), hm.r_out, fc='none', ec=col['cell_h'], ls='--', lw=1.6, zorder=5))
     ap.plot([lo, hi], [0, 0], c='k', lw=.6, ls=':', zorder=5)
@@ -396,7 +400,7 @@ def plot_layout(res, axes=None, n=4, rot=45.0):
     if vanes:
         leg += [Patch(fc=col['shade'], ec='none', label=f"shade vanes closed (octagon, {t_vane*1e3:.0f} mm thick, full block height)"),
                 Patch(fc='none', ec=col['shade'], ls='--', label='shade vanes open')]
-    leg += [Patch(fc=col['heater'], ec='k', label=f"heater {hs*1e3:.0f} mm square, full height, {hm.heater.max_power/1e3:,.0f} kW"),
+    leg += [Patch(fc=col['heater'], ec='k', label=f"heater {describe_heater(el)}, full height, {hm.heater.max_power/1e3:,.0f} kW"),
             Line2D([0], [0], c=col['cell_s'], ls='--', label=f"discharge model: stick cell, adiabatic r_out {m.r_out:.3f} m"),
             Line2D([0], [0], c=col['cell_h'], ls='--', label=f"charge model: heater cell, adiabatic r_out {hm.r_out:.3f} m")]
     fig.legend(handles=leg, loc='lower center', ncol=2, fontsize=9, bbox_to_anchor=(0.5, -0.01))

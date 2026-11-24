@@ -627,7 +627,7 @@ def sec_tank(doc, ctx):
         "an electricity loss (fallback 0.45 if E_rad = 0).",
         "Histories T_avg(t) (block volume mean), T_top(t) and T_bot(t) (radially area-weighted means of the top and "
         "bottom axial rings). These come from snapshots every 600 s, interpolated onto the solver steps.",
-        "Heater cavity area A_hcav = pi r_hc^2 (from heater.side_len and area_ratio, or the optimizer's heater "
+        "Heater cavity area A_hcav = pi r_hc^2 (from the heater element radius and area_ratio, or the optimizer's heater "
         "search). E_sink is the roof + floor sink energy removed during the run (section 5.7).",
     ])
     doc.p("Sizing (size_hot_zone, tank.py:300-311):")

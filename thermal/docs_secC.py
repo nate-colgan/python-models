@@ -111,9 +111,11 @@ def sec_heater_deposition(doc, ctx):
 
 def _sec_heater(doc, cfg, opt, cy):
     from .build import heater_max_power
+    from .heater import element, describe
     h = cfg['heater']
     H = float(cfg['storage'].get('block_height') or cfg['storage']['L'])
-    r_h = 2 * h['side_len'] / np.pi
+    el = element(h, H, float(cfg['storage']['T_min']))
+    r_h = el['r_h']
     P_cap = heater_max_power(h, H)
     _FIG['n'] = 0
     doc.h2('4.6 Heater and the charge cell')
@@ -141,7 +143,16 @@ def _sec_heater(doc, cfg, opt, cy):
         "not the field left by a discharge.",
     ])
     doc.table(['YAML heater input', 'value', 'use'], [
-        ['heater.side_len', f"{h['side_len']} m", f"r_h = {r_h:.4f} m (heater diameter {2 * r_h * 1e3:.0f} mm)"],
+        ['heater.type', f"{h.get('type', 'rod')}", f"element at the power cap: {describe(el)}; r_h = {r_h:.4f} m "
+                                                    f"({_ref('heater.py', 'def element')}). Tube: D = sqrt(rho_e legs^2 H P "
+                                                    "/ (V^2 pi w (1 - w))), rho_e = the highest of "
+                                                    "properties.heater_graphite_resistivity (Mersen 2020 data to 2002 C, extrapolated above) over "
+                                                    "[T_min, max_temperature]; the element is resized for every heater "
+                                                    "power the charge search tries"],
+        ['heater.voltage / wall_ratio / legs', f"{h.get('voltage')} V / {h.get('wall_ratio')} / {h.get('legs', 1)}",
+         'tube: DC supply voltage at full power, wall thickness / OD, strips in series'],
+        ['heater.density', f"{h.get('density', 1850.0)} kg/m3", 'element mass = A_cross x (H_block + t_top) x density '
+                                                               '(costed at heater_graphite_per_kg)'],
         ['heater.area_ratio', f"{h['area_ratio']}", f"cavity radius {h['area_ratio'] * r_h:.3f} m; the optimizer "
                                                    "searches it (section 9)"],
         ['heater.max_temperature', f"{h['max_temperature']} K", f"surface temperature limit "
@@ -227,7 +238,8 @@ def _fig_heater_curve(h, H, cfg):
     except Exception:
         return None
     sig = 5.67036713e-8
-    r_h = 2 * h['side_len'] / np.pi
+    from .heater import element
+    r_h = element(h, H, float(cfg['storage']['T_min']))['r_h']
     D = 2 * r_h
     eps_h = float(h['emissivity'])
     T_hmax = float(h['max_temperature'])

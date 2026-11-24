@@ -22,7 +22,7 @@ One design = one call of `evaluate(x, base_cfg, opt)`:
                      heat-rejection fans) / AC in (incl. hold losses), and the lifetime cost
                      of the energy lost = price x (AC in - net AC out) x cycles
 
-Optimized variables (DESIGN_VARS) are reparameterised so every point in the box is a
+Optimized variables (DESIGN_VARS, or opt['design_vars'] from the notebook inputs cell) are reparameterised so every point in the box is a
 valid geometry: powerstick side as a fraction of what fits in the liner, block height as
 a fraction between L + min_lower_zone and H_max. T_min and the swing are outputs of the sizing; T_min >=
 T_min_floor_C and swing_min <= swing <= swing_max are constraints.
@@ -46,7 +46,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from .build import build_tinless, build_heater, heater_max_power
+from .build import build_tinless, build_heater
+from .heater import heater_max_power, element as heater_element, element_mass, describe as describe_heater
 from .sizing import run_discharge, shade_open_resize, FluxUnreachable
 from .properties import storage_rho, storage_cp
 from . import tank as tk
@@ -71,13 +72,22 @@ OPT_DEFAULTS = {
         'lifetime_yr': 30.0,
         'soft_cost_frac': 0.30,   # tax, freight, soft costs on all capex (incl. replacements)
         'elec_price': 75.0,       # $/MWh, same for charge and discharge: prices the energy lost
+        # 'Pilot' | 'FOAK' | 'NOAK' (thermal/cost_scenarios.py) overrides the cost inputs it lists, on top
+        # of these and the notebook inputs; None = the inputs as written
+        'cost_scenario': None,
     },
     'objective': {'rte_min': 0.0},     # optional floor on net RTE (0 = none)
     'costs': {
         'cell_per_cm2': 1.0,      # $/cm2 of cell-covered powerstick face (incl. at replacement)
         'stick_per_m': 100.0,     # $/m of stick length
         'stick_fixed': 2000.0,    # $/stick
-        'heater_fixed': 5000.0,   # $/heater element (PLACEHOLDER)
+        # iso-molded graphite $/kg: the tank support-column graphite and the heater graphite; None ->
+        # the YAML tank.costs column_graphite_per_kg (central)
+        'iso_graphite_per_kg': None,
+        # heater: heater_fixed (element machining, terminals, assembly, install) + element graphite (cross-
+        # section x (H_block + t_top) x heater.density) x heater_graphite_per_kg, per heater
+        'heater_fixed': 0.0,               # $/heater
+        'heater_graphite_per_kg': None,    # $/kg; None -> iso_graphite_per_kg
         'charge_electrics_per_kW': 75.0,   # $/kW heater supply (PLACEHOLDER)
         'inverter_per_kW': 100.0,          # $/kW_AC peak (NREL ~$75/kW ex-factory + install)
         'heat_rejection_per_kWth': 125.0,  # $/kW_th dry cooler (IEA SHC Task 48: $61-134, 2014)
@@ -98,6 +108,9 @@ OPT_DEFAULTS = {
         'shade_motor': 1500.0,             # $/motor incl. driver (PLACEHOLDER)
         'shade_linkage': 2000.0,           # $/stick linkage, 'linkage' drive (PLACEHOLDER)
     },
+    # central values replacing the YAML tank.costs rates for every design (scalar $ per unit;
+    # keys of tank.TANK_DEFAULTS['costs']); empty = the YAML values
+    'tank_costs': {},
     'parasitics': {
         # dry cooler fans + coolant pumps, kW_e per kW_th rejected (DIN V 18599 seasonal
         # default for dry heat rejection 0.045; energy class E ~0.033). Floor-cooling fans
@@ -128,6 +141,12 @@ OPT_DEFAULTS = {
         'swing_min': 200.0, 'swing_max': 1000.0,   # C allowed swing (constraint)
     },
     'limits': {'D_tank_max': 80.0, 'H_tank_max': 30.0},
+    # heater current leads through the top insulation (thermal/heater_leads.py). table: path of a lead
+    # table (HL.build_lead_table) -> every design gets its leads' cost and losses interpolated from it
+    # at its heater current, t_top and block T_max, and the element graphite covers the block height
+    # only (the leads replace the length through the roof). None -> leads not modelled (the element
+    # runs on through the top insulation, as before).
+    'leads': {'table': None, 'n_per_heater': 2},
     'fidelity': {'dz': 0.5, 'nrad': 5, 'dt_scale': 2.0, 'vane_rays': 2 ** 12, 'heater_ar_tol': 0.03},
 }
 
@@ -135,7 +154,7 @@ OPT_DEFAULTS = {
 DESIGN_VARS = [
     ('liner_side', 0.20, 0.60, False, 'liner side length [m]'),
     ('ps_frac', 0.0, 1.0, False, 'powerstick side: 0.10 m + frac x (room in liner - 0.10)'),
-    ('L', 3.0, 10.0, False, 'stick length [m]'),
+    ('L', 3.0, 6.0, False, 'stick length [m]'),
     ('H_frac', 0.0, 1.0, False, 'block height: L + dz_min + frac x (H_max - L - dz_min)'),
     ('avg_flux', 5.0, 20.0, False, 'cell flux target [W/cm2] (continuous)'),
     ('shade_8th', 2, 48, True, 'shade thickness i x 1/8 in (1/4 - 6 in)'),
@@ -147,6 +166,29 @@ DESIGN_VARS = [
 VAR_NAMES = [v[0] for v in DESIGN_VARS]
 BOUNDS = [(v[1], v[2]) for v in DESIGN_VARS]
 INTEGRALITY = np.array([v[3] for v in DESIGN_VARS])
+OPT_DEFAULTS['design_vars'] = [list(v) for v in DESIGN_VARS]
+
+
+def design_vars(opt):
+    """The run's optimized variables: opt['design_vars'] (the notebook inputs cell), else
+    DESIGN_VARS. Names must be exactly VAR_NAMES (any order); bounds can change.
+    -> list of (name, lo, hi, integer, description)."""
+    dv = [tuple(v) for v in ((opt or {}).get('design_vars') or DESIGN_VARS)]
+    names = [v[0] for v in dv]
+    if sorted(names) != sorted(VAR_NAMES):
+        raise ValueError(f"design_vars must name each of {VAR_NAMES} once, got {names}")
+    for name, lo, hi, *_ in dv:
+        if not lo < hi:
+            raise ValueError(f"design_vars {name}: lower {lo} must be below upper {hi}")
+    return dv
+
+
+def var_bounds(opt):
+    return [(float(v[1]), float(v[2])) for v in design_vars(opt)]
+
+
+def var_integrality(opt):
+    return np.array([bool(v[3]) for v in design_vars(opt)])
 
 
 def merge(base, over):
@@ -159,13 +201,95 @@ def merge(base, over):
     return out
 
 
+def _flat(d, pre=''):
+    out = {}
+    for k, v in d.items():
+        if isinstance(v, dict) and v:
+            out.update(_flat(v, f"{pre}{k}."))
+        else:
+            out[f"{pre}{k}"] = v
+    return out
+
+
+def scenario_name(opt):
+    """Active cost scenario ('pilot' / 'foak' / 'noak') or None."""
+    from .cost_scenarios import SCENARIOS
+    sc = ((opt or {}).get('economics') or {}).get('cost_scenario')
+    if sc in (None, '', False) or str(sc).lower() == 'none':
+        return None
+    sc = str(sc).lower()
+    if sc not in SCENARIOS:
+        raise ValueError(f"economics.cost_scenario must be one of {sorted(SCENARIOS)} (any case) or None, not {sc!r}")
+    return sc
+
+
+def apply_scenario(opt, given=None):
+    """opt with the active cost scenario's values on top (idempotent). opt['_sources']
+    records, per dotted key, 'inputs' (given, e.g. the notebook inputs cell) or 'scenario X'."""
+    from .cost_scenarios import SCENARIOS
+    sc = scenario_name(opt)
+    src = dict(opt.get('_sources') or {})
+    if given is not None:
+        src.update({k: 'inputs' for k in _flat(given)})
+    out = merge(opt, SCENARIOS[sc]) if sc else copy.deepcopy(opt)
+    if sc:
+        src.update({k: f"scenario {sc.upper()}" for k in _flat(SCENARIOS[sc])})
+    out['_sources'] = src
+    return out
+
+
+def build_opt(inputs):
+    """Optimizer inputs for a run: OPT_DEFAULTS < `inputs` (the notebook inputs cell) < the
+    cost scenario named in inputs['economics']['cost_scenario']. Checks design_vars and the
+    tank_costs keys."""
+    opt = apply_scenario(merge(OPT_DEFAULTS, inputs), given=inputs)
+    design_vars(opt)
+    bad = set(opt.get('tank_costs') or {}) - set(tk.TANK_DEFAULTS['costs'])
+    if bad:
+        raise KeyError(f"tank_costs: unknown keys {sorted(bad)} (see tank.TANK_DEFAULTS['costs'])")
+    return opt
+
+
+def _central(v):
+    """Central value of a YAML [low, central, high] cost triple (or a scalar)."""
+    return float(np.broadcast_to(np.asarray(v, float), (3,))[1])
+
+
+def _with_central(old, v):
+    """Triple `old` with its central value set to v (low / high widened to include it)."""
+    if isinstance(old, (list, tuple)) and len(old) == 3:
+        return [min(float(old[0]), v), float(v), max(float(old[2]), v)]
+    return float(v)
+
+
+def apply_tank_costs(cfg_tank, opt):
+    """YAML tank section with the optimizer's cost inputs: tank_costs (central values),
+    costs.iso_graphite_per_kg -> column_graphite_per_kg, and the economics the tank model
+    reports lost heat with (elec_price, heater_eff = eta_in)."""
+    c = cfg_tank.setdefault('costs', {})
+    over = dict(opt.get('tank_costs') or {})
+    iso = (opt.get('costs') or {}).get('iso_graphite_per_kg')
+    if iso is not None:
+        over['column_graphite_per_kg'] = iso
+    for k, v in over.items():
+        if v is None:
+            continue
+        if k not in tk.TANK_DEFAULTS['costs']:
+            raise KeyError(f"tank_costs: unknown key {k!r}")
+        c[k] = _with_central(c.get(k, tk.TANK_DEFAULTS['costs'][k]), float(v))
+    eco = opt.get('economics') or {}
+    cfg_tank['economics'] = dict(cfg_tank.get('economics') or {}, elec_price=eco.get('elec_price', 87.0),
+                                 heater_eff=eco.get('eta_in', 0.9))
+    return cfg_tank
+
+
 # --------------------------------------------------------------------------
 # Design vector <-> physical design
 # --------------------------------------------------------------------------
 def decode(x, opt):
     """x (DESIGN_VARS order) -> physical design dict."""
     g = opt['geometry']
-    v = dict(zip(VAR_NAMES, np.asarray(x, float)))
+    v = dict(zip([dv[0] for dv in design_vars(opt)], np.asarray(x, float)))
     liner = v['liner_side']
     ps_hi = min(0.40, liner - 2 * g['ps_liner_gap'])
     ps = 0.10 + v['ps_frac'] * max(ps_hi - 0.10, 0.0)
@@ -183,12 +307,13 @@ def encode(design, opt):
     g = opt['geometry']
     liner, L = design['liner_side'], design['L']
     ps_hi = min(0.40, liner - 2 * g['ps_liner_gap'])
-    x = [liner, (design['ps_side'] - 0.10) / max(ps_hi - 0.10, 1e-9), L,
-         (design['H_block'] - L - g.get('min_lower_zone', 0.25))
-         / max(g['H_max'] - L - g.get('min_lower_zone', 0.25), 1e-9), design['avg_flux'],
-         round(design['shade_thickness'] / (INCH / 8)), design['t_side'], design['t_top'],
-         design.get('L_bot', 2.0), design['T_max_C']]
-    return np.clip(np.array(x, float), [b[0] for b in BOUNDS], [b[1] for b in BOUNDS])
+    v = dict(liner_side=liner, ps_frac=(design['ps_side'] - 0.10) / max(ps_hi - 0.10, 1e-9), L=L,
+             H_frac=(design['H_block'] - L - g.get('min_lower_zone', 0.25))
+             / max(g['H_max'] - L - g.get('min_lower_zone', 0.25), 1e-9), avg_flux=design['avg_flux'],
+             shade_8th=round(design['shade_thickness'] / (INCH / 8)), t_side=design['t_side'],
+             t_top=design['t_top'], L_bot=design.get('L_bot', 2.0), T_max_C=design['T_max_C'])
+    dv = design_vars(opt)
+    return np.clip(np.array([v[d[0]] for d in dv], float), [d[1] for d in dv], [d[2] for d in dv])
 
 
 def design_from_cfg(cfg):
@@ -232,6 +357,7 @@ def design_cfg(base_cfg, d, opt):
         t['L_bot'] = d['L_bot']
     t['P_rated'], t['duration_hr'] = opt['P_rated'], opt['duration_hr']
     t['block_axial_losses'] = True
+    apply_tank_costs(t, opt)                   # cost rates from the optimizer inputs / scenario
     return cfg
 
 
@@ -304,7 +430,8 @@ def _charge(m, cfg, ar, end_hr, dt_scale, P=None):
     dt = np.diff(t)
     return dict(ar=float(ar), t_charge=t_c, E_heater=float(np.sum(r['Q_heater'][1:] * dt)),
                 E_sink=float(np.sum(r['Q_sink'][1:] * dt)), T_heater_max=float(r['T_heater'].max()),
-                r_cav=hm.r_in, P_heater=hm.heater.max_power)
+                r_cav=hm.r_in, P_heater=hm.heater.max_power,
+                element={k: (float(v) if isinstance(v, (int, float, np.floating)) else v) for k, v in hm.element.items()})
 
 
 def heater_search(m, cfg, opt):
@@ -313,12 +440,19 @@ def heater_search(m, cfg, opt):
       - cavity at its minimum (heater_min_gap) meets the target at the cap: the heater
         power is cut to the smallest that still meets it (electrics costed on that);
       - otherwise the cavity grows at the cap: smallest area_ratio that meets it.
-    -> dict(ok, violation, ar, t_charge, P_heater, ...)."""
+    The element is sized for each power tried (thermal.heater.element: a tube from the
+    voltage, wall ratio and resistivity), and the minimum cavity follows its radius.
+    -> dict(ok, violation, ar, t_charge, P_heater, element, ...)."""
     h = cfg['heater']
     target = opt['charge_hr']
     dts = opt['fidelity']['dt_scale']
     tol = opt['fidelity']['heater_ar_tol']
-    r_h = 2 * h['side_len'] / math.pi
+    T_lo = float(m.T_min)
+
+    def ar_min(P):                       # cavity at the minimum heater gap, element sized for P
+        r = heater_element(h, m.H_block, T_lo, P=P)['r_h']
+        return (r + opt['geometry']['heater_min_gap']) / r
+
     if h['max_temperature'] <= m.T_max + 1.0:
         return dict(ok=False, violation=(m.T_max + 1.0 - h['max_temperature']) / 100.0,
                     reason='heater max temperature <= block T_max')
@@ -330,14 +464,14 @@ def heater_search(m, cfg, opt):
     if t_floor > target:
         return dict(ok=False, violation=t_floor / target - 1, reason='charge power-limited above target')
     end_hr = 1.5 * target
-    ar_lo = (r_h + opt['geometry']['heater_min_gap']) / r_h
+    ar_lo = ar_min(P_cap)
     c_lo = _charge(m, cfg, ar_lo, end_hr, dts)
     if c_lo['t_charge'] <= target:
         # minimum cavity is enough at the cap: smallest heater power that still meets the target
         P_lo, P_hi, c_hi = E_blk / (target * 3600), P_cap, c_lo
         while P_hi / P_lo > 1 + tol:
             P_mid = math.sqrt(P_lo * P_hi)
-            c_mid = _charge(m, cfg, ar_lo, end_hr, dts, P=P_mid)
+            c_mid = _charge(m, cfg, ar_min(P_mid), end_hr, dts, P=P_mid)
             if c_mid['t_charge'] <= target:
                 P_hi, c_hi = P_mid, c_mid
             else:
@@ -427,6 +561,7 @@ def _n_events(total, step):
 # --------------------------------------------------------------------------
 def evaluate_design(d, base_cfg, opt):
     """Full evaluation of a physical design -> metrics dict (capex_total, RTE, violations, ...)."""
+    opt = apply_scenario(opt)                  # no-op when build_opt already applied it
     eco, cost, dep, par = opt['economics'], opt['costs'], opt['deposition'], opt['parasitics']
     cfg = design_cfg(base_cfg, d, opt)
     out = dict(design=d)
@@ -537,11 +672,29 @@ def evaluate_design(d, base_cfg, opt):
     E_charge_heat = (N * (E_released + hs['E_sink'])
                      + (L_mid['Q_side'] + L_mid['Q_edge']) * hs['t_charge'] * 3600)
     E_hold_heat = tank.loss_fn(T_max_C) * max(t_hold, 0.0) * 3600       # stick out, door closed
-    E_in = (E_charge_heat + E_hold_heat) / eco['eta_in']
+    # heater leads (lead table): per lead at this design's current, t_top and block T_max. Joule heat
+    # while charging is electricity bought; the heat they drain from the storage (charging: net, < 0
+    # when Joule heat flows down into the block; idle = hold + discharge, graphite joint open) is put
+    # back by the heaters; the heat they reject (cooled copper) loads the heat rejection
+    ld = None
+    E_lead_joule = E_lead_drain = E_lead_rej = 0.0
+    if lt:
+        el = hs['element']
+        V = float(el.get('V') or cfg['heater'].get('voltage') or 0.0)
+        if V <= 0:
+            raise ValueError("heater leads need the heater voltage (heater.voltage)")
+        n_ld = N * int(opt['leads'].get('n_per_heater', 2))
+        ld = lt(hs['P_heater'] / V, c['t_top'], T_max_C)
+        t_ch_s, t_idle_s = hs['t_charge'] * 3600, max(cycle_hr - hs['t_charge'], 0.0) * 3600
+        E_lead_joule = n_ld * ld['Q_J_charge'] * t_ch_s
+        E_lead_drain = n_ld * (ld['drain_charge'] * t_ch_s + ld['drain_idle'] * t_idle_s)
+        E_lead_rej = n_ld * (max(ld['Q_rej_charge'], 0.0) * t_ch_s + max(ld['Q_rej_idle'], 0.0) * t_idle_s)
+        E_charge_heat += E_lead_drain
+    E_in = (E_charge_heat + E_hold_heat + E_lead_joule) / eco['eta_in']
     E_out = N * 0.5 * (E_f_ac + E_d_ac)
     P_floor_fan = tank.loss_peak['P_fan']
     E_floor_fan = P_floor_fan * cycle_hr * 3600                          # runs all cycle
-    E_rej_fan = par['heat_rejection_kWe_per_kWth'] * N * 0.5 * (mf['E_rej'] + md['E_rej'])
+    E_rej_fan = par['heat_rejection_kWe_per_kWth'] * (N * 0.5 * (mf['E_rej'] + md['E_rej']) + E_lead_rej)
     E_net = E_out - E_floor_fan - E_rej_fan
     RTE, RTE_gross = E_net / E_in, E_out / E_in
     # average cell efficiency = DC / heat absorbed by the active cells, life average; the
@@ -559,10 +712,25 @@ def evaluate_design(d, base_cfg, opt):
     stick_cost = cell_cost + cost['stick_per_m'] * m.L + cost['stick_fixed']
     ls = liner_shade_costs(m, cfg['tank']['t_top'], cost)
     P_heat_kW = hs['P_heater'] / 1e3
+    lt = lead_table(opt)
+    # element graphite: block height only when the leads are modelled (they replace the length
+    # through the roof insulation); else the element runs on through the top insulation
+    m_heater = element_mass(hs['element'], hz.H_block + (0.0 if lt else c['t_top']))   # kg
+    heater_per_kg = cost.get('heater_graphite_per_kg')
+    if heater_per_kg is None:                                # iso-molded graphite, as the support columns
+        heater_per_kg = _central(c['costs']['column_graphite_per_kg'])
+    hc_parts = {'fixed': float(cost.get('heater_fixed', 0.0) or 0.0), 'graphite': m_heater * heater_per_kg}
+    hc = dict(total=sum(hc_parts.values()), parts=hc_parts)
     P_ac_peak = N * max(mf['P_elec_peak'], md['P_elec_peak']) * eo
     inv_kW = max(opt['P_rated'], P_ac_peak) / 1e3
     Q_rej_peak = max(mf['Q_rej_peak'], md['Q_rej_peak'])
-    P_chg_ac = N * hs['P_heater'] / eco['eta_in']            # plant peak draw: all heaters at full power
+    P_lead_J = 0.0                                           # W lead Joule per heater at full power
+    if ld:
+        n_ph = int(opt['leads'].get('n_per_heater', 2))
+        P_lead_J = n_ph * ld['Q_J_charge']
+        # cooling per stick slot: discharge peak + the idle leads, or the leads while charging
+        Q_rej_peak = max(Q_rej_peak + n_ph * max(ld['Q_rej_idle'], 0.0), n_ph * max(ld['Q_rej_charge'], 0.0))
+    P_chg_ac = N * (hs['P_heater'] + P_lead_J) / eco['eta_in']   # plant peak draw: all heaters at full power
     ic_kW = max(P_chg_ac, P_ac_peak) / 1e3                  # grid connection: the larger of charge and output
     lines = {
         'tank (containment, insulation, supports, foundation)': tank.cost['total'][1],
@@ -570,11 +738,14 @@ def evaluate_design(d, base_cfg, opt):
         'powersticks': N * stick_cost,
         'liners (grafoil walls, CFC floor)': N * ls['liner'],
         'shades (RGF vanes, axles, drives)': N * ls['shade'],
-        'heaters': N * (cost['heater_fixed'] + cost['charge_electrics_per_kW'] * P_heat_kW),
+        'heaters': N * (hc['total'] + cost['charge_electrics_per_kW'] * (P_heat_kW + P_lead_J / 1e3)),
         'inverters': cost['inverter_per_kW'] * inv_kW,
         'grid interconnect': cost['interconnect_per_kW'] * ic_kW,
         'heat rejection': cost['heat_rejection_per_kWth'] * N * Q_rej_peak / 1e3,
     }
+    if ld:
+        lines['heater leads (graphite / W / water-cooled Cu)'] = (
+            N * int(opt['leads'].get('n_per_heater', 2)) * (ld['material'] + ld['joints']))
     soft = 1 + eco['soft_cost_frac']
     capex0 = soft * sum(lines.values())
     rep_cost = soft * N * cell_cost
@@ -599,6 +770,8 @@ def evaluate_design(d, base_cfg, opt):
         energy_mismatch=hz.energy_mismatch, dep_nm_per_cycle=dep_nm,
         E_stick_fresh_kWh=st_f.E_stick_e / 3.6e6, E_stick_deg_kWh=st_d.E_stick_e / 3.6e6,
         P_stick_fresh_kW=st_f.P_stick / 1e3, t_discharge_hr=t_dis_f, t_discharge_deg_hr=t_dis_d,
+        m_heater_kg=m_heater, heater_per_kg=heater_per_kg, heater_cost_each=hc['total'],
+        heater_cost_parts=hc['parts'], cost_scenario=scenario_name(opt),
         t_charge_hr=hs['t_charge'], t_hold_hr=t_hold, heater_area_ratio=hs['ar'], heater_cavity_D=2 * hs['r_cav'],
         side_edge_frac=pf, loss_pct_day=tank.loss_cycle['Q_total'] * 86400 / hz.E_th * 100,
         Q_rej_peak_kW=Q_rej_peak / 1e3, inverter_kW=inv_kW, interconnect_kW=ic_kW, P_charge_ac_kW=P_chg_ac / 1e3,
@@ -607,8 +780,26 @@ def evaluate_design(d, base_cfg, opt):
         r_in=m.r_in, r_out=m.r_out, liner_cost=ls['liner'], shade_cost=ls['shade'],
         shade_rgf_m3=ls['shade_rgf_m3'], shade_parts=ls['shade_parts'],
         flux_fresh=mf, flux_deg=md, tank_warnings=tank.warnings,
+        leads=ld, E_lead_joule_MWh=E_lead_joule * MWh, E_lead_drain_MWh=E_lead_drain * MWh,
+        E_lead_lost_MWh=(E_lead_joule + E_lead_drain) * MWh,
     )
     return out
+
+
+_LEAD_TABLES = {}
+
+
+def lead_table(opt):
+    """The run's lead table (heater_leads.LeadTable) from opt['leads']['table'] (loaded once per
+    process), or None."""
+    path = ((opt or {}).get('leads') or {}).get('table')
+    if not path:
+        return None
+    if path not in _LEAD_TABLES:
+        from .heater_leads import LeadTable
+        with open(path) as fh:
+            _LEAD_TABLES[path] = LeadTable(json.load(fh), path)
+    return _LEAD_TABLES[path]
 
 
 def objective_from(res):
@@ -639,7 +830,8 @@ class Objective:
         except Exception as e:                              # infeasible geometry, solver failure
             res = dict(design=d, error=f"{type(e).__name__}: {e}", trace=traceback.format_exc(limit=3))
         f = objective_from(res)
-        res.update(f=f, x=list(map(float, x)), wall_s=time.perf_counter() - t0)
+        res.update(f=f, x=list(map(float, x)), x_names=[v[0] for v in design_vars(self.opt)],
+                   wall_s=time.perf_counter() - t0)
         if self.log_dir:
             os.makedirs(self.log_dir, exist_ok=True)
             with open(os.path.join(self.log_dir, f'evals_{os.getpid()}.jsonl'), 'a') as fh:
@@ -675,16 +867,19 @@ def load_log(log_dir):
 
 def run_de(base_cfg, opt, log_dir, maxiter=30, popsize=10, workers=20, seed=0, x0=None, tol=1e-3,
            callback=None):
-    """differential_evolution over DESIGN_VARS in a process pool (one thread per worker)."""
+    """differential_evolution over the run's design_vars (opt['design_vars'], else DESIGN_VARS)
+    in a process pool (one thread per worker)."""
     import multiprocessing as mp
     from scipy.optimize import differential_evolution
     env = {k: os.environ.get(k) for k in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS')}
     for k in env:
         os.environ[k] = '1'
+    opt = apply_scenario(opt)
     obj = Objective(base_cfg, opt, log_dir)
     try:
         with mp.get_context('spawn').Pool(workers) as pool:
-            res = differential_evolution(obj, BOUNDS, integrality=INTEGRALITY, maxiter=maxiter, popsize=popsize,
+            res = differential_evolution(obj, var_bounds(opt), integrality=var_integrality(opt), maxiter=maxiter,
+                                         popsize=popsize,
                                          seed=seed, x0=x0, tol=tol, polish=False, updating='deferred',
                                          workers=pool.map, init='sobol', callback=callback)
     finally:
@@ -716,7 +911,8 @@ def summary(res):
         f"Plant: {res['N_ps']} sticks + heaters, hot zone {res['D_hot']:.1f} m, tank {res['D_tank']:.1f} x {res['H_tank']:.1f} m; "
         f"block r {res['r_in']:.3f}-{res['r_out']:.3f} m, T {res['T_min_C']:.0f}-{d['T_max_C']:.0f} C (shade-open sizing: "
         f"volume x{res['volume_factor']:.3f}, {res['sizing_runs']} runs{'' if res['sizing_converged'] else ', NOT converged'}); heater {res['heater'].get('P_heater', 0)/1e3:,.0f} kW, cavity {res['heater_cavity_D']*1e3:.0f} mm "
-        f"(area_ratio {res['heater_area_ratio']:.2f})",
+        f"(area_ratio {res['heater_area_ratio']:.2f})"
+        + (f"; element {describe_heater(h['element'])}, {res.get('m_heater_kg', np.nan):,.0f} kg" if h.get('element') else ''),
         f"Grid: pitch {res['pitch']:.3f} m, graphite walls " + ', '.join(f"{k} {v*1e3:.0f}" for k, v in res['webs'].items())
         + " mm (stick cavities at 45 deg)",
         *([f"Floor (design-day air {res.get('v_air', float('nan')):.0f} m/s): max {res['T_floor_max_C']:.0f} C, "
@@ -741,7 +937,9 @@ def summary(res):
         f"Capex ${res['capex0']/1e6:.1f}M initial (incl. soft costs): " + ', '.join(
             f"{k.split(' (')[0]} ${v/1e6:.1f}M" for k, v in res['capex_lines'].items())
         + f"; inverters {res['inverter_kW']/1e3:.1f} MW, interconnect {res['interconnect_kW']/1e3:.1f} MW "
-        f"(charge {res['P_charge_ac_kW']/1e3:.1f} MW); cell replacement ${res['rep_cost']/1e6:.1f}M each",
+        f"(charge {res['P_charge_ac_kW']/1e3:.1f} MW); cell replacement ${res['rep_cost']/1e6:.1f}M each"
+        + (f"; heater element ${res['heater_cost_each']:,.0f} each" if 'heater_cost_each' in res else '')
+        + (f"; cost scenario {res['cost_scenario'].upper()}" if res.get('cost_scenario') else ''),
         f"LIFETIME CAPEX ${res['capex_total']/1e6:,.1f}M; objective (capex + energy lost) "
         f"${res['lifetime_cost']/1e6:,.1f}M" + ('' if res['feasible'] else f"  INFEASIBLE {res['violations']}"),
     ]

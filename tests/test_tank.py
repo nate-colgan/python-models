@@ -169,7 +169,8 @@ def test_heater_cell_matches_stick_and_closes_energy():
     st = m.storage
     assert abs(hm.V / (math.pi * (st.block.rad_out ** 2 - st.block.rad_in ** 2) * m.H_block) - 1) < 1e-12
     assert np.allclose(hm.storage.axial_dz(), st.axial_dz())
-    assert abs(hm.r_in - 4.0 * 2 * cfg['heater']['side_len'] / math.pi) < 1e-12
+    from thermal.heater import element
+    assert abs(hm.r_in - 4.0 * element(cfg['heater'], m.H_block, m.T_min)['r_h']) < 1e-12
     r = hm.sim.run_heating_simulation(hm.heater, end_time=200 * 3600, **hm.run_kwargs)
     assert r['T_avg'][-1] >= hm.T_max and r['T_avg'][-2] < hm.T_max
     nR = hm.storage.num_rad_segments
@@ -181,6 +182,28 @@ def test_heater_cell_matches_stick_and_closes_energy():
     E_in = float(np.sum(r['Q_heater'][1:] * np.diff(r['time'])))
     dE = storage_rho(2400.0) * storage_cp(2400.0) * hm.V * (r['T_avg'][-1] - r['T_avg'][0])
     assert abs(E_in / dE - 1) < 1e-6
+
+
+def test_tube_heater_element_sizing():
+    """Tube element: V^2 / R = P, R = rho_e legs^2 H / A, A = pi D^2 w (1 - w); rod unchanged."""
+    from thermal.heater import element
+    from thermal.properties import heater_graphite_resistivity
+    h = dict(type='tube', voltage=60.0, wall_ratio=0.1, legs=2, density=1850.0, max_temperature=2873.0,
+             max_power_per_m=150e3)
+    H, P = 10.0, 600e3
+    el = element(h, H, 2000.0, P=P)
+    rho = float(np.max(heater_graphite_resistivity(np.linspace(2000.0, 2873.0, 41))))   # highest over the range
+    assert abs(float(heater_graphite_resistivity(18 + 273.15)) - 1.6486e-5) < 1e-12        # Mersen 2020 data
+    assert abs(float(heater_graphite_resistivity(2002 + 273.15)) - 1.1357e-5) < 1e-12
+    assert abs(el['rho_e'] - rho) < 1e-15
+    assert abs(el['V'] ** 2 / el['R'] / P - 1) < 1e-12
+    assert abs(rho * 2 ** 2 * H / el['A_cross'] / el['R'] - 1) < 1e-12
+    assert abs(math.pi * el['D'] ** 2 * 0.1 * 0.9 / el['A_cross'] - 1) < 1e-12
+    assert abs(el['t'] / el['D'] - 0.1) < 1e-12 and abs(el['I'] - P / 60.0) < 1e-9
+    assert element(h, H, 2000.0)['P'] == 150e3 * H                       # default: the power cap
+    assert element(h, H, 2000.0, P=P / 4)['D'] < el['D']                 # element follows the power
+    rod = element(dict(type='rod', side_len=0.15), H, 2000.0, P=P)
+    assert abs(rod['r_h'] - 2 * 0.15 / math.pi) < 1e-12 and abs(rod['A_cross'] - 0.0225) < 1e-12
 
 
 def test_optimizer_decode_valid_and_roundtrip():
@@ -289,3 +312,52 @@ def test_lifetime_mean_D():
     assert abs(dc - (1 * 0.5 + 0.85 * 0.425) / 1.85) < 1e-5
     assert abs(db - 0.05) < 1e-3
     assert lifetime_mean_D(0.0, 1.0, 0.1) == (0.0, 0.0)
+
+
+def test_cost_scenario_heater_fixed():
+    """Scenario heater_fixed per heater (Nate, 2026-11-24): Pilot 7500, FOAK 6000, NOAK 4500 $."""
+    from thermal import optimize as O
+    for sc, want in (('Pilot', 7500.0), ('FOAK', 6000.0), ('NOAK', 4500.0)):
+        assert O.build_opt({'economics': {'cost_scenario': sc}})['costs']['heater_fixed'] == want
+
+
+def test_cost_scenario_layers_and_none_is_unchanged():
+    """No scenario: build_opt = OPT_DEFAULTS + inputs, and tank cost inputs equal to the YAML centrals leave the
+    tank costs unchanged. A scenario overrides the inputs it lists and is recorded in _sources."""
+    from thermal import optimize as O
+    from thermal.build import load_config
+    base = load_config(os.path.join(ROOT, 'tinless_model_input.yaml'))
+    d = O.design_from_cfg(base)
+    plain = O.build_opt({})
+    assert {k: v for k, v in plain.items() if k != '_sources'} == O.OPT_DEFAULTS
+    ref = O.design_cfg(base, d, plain)['tank']['costs']
+    yc = base['tank']['costs']
+    cell = O.build_opt({'tank_costs': {k: O._central(yc[k]) for k in ('storage_graphite_per_kg', 'steel_per_t',
+                                                                       'thermax_per_kg', 'fans_per_m3s')},
+                        'costs': {'iso_graphite_per_kg': O._central(yc['column_graphite_per_kg'])}})
+    assert O.design_cfg(base, d, cell)['tank']['costs'] == ref
+    noak = O.build_opt({'economics': {'cost_scenario': 'NOAK'}, 'costs': {'cell_per_cm2': 99.0, 'shade_motor': 7.0}})
+    assert noak['costs']['cell_per_cm2'] == 1.872 and noak['costs']['shade_motor'] == 7.0
+    assert noak['_sources']['costs.cell_per_cm2'] == 'scenario NOAK' and noak['_sources']['costs.shade_motor'] == 'inputs'
+    tc = O.design_cfg(base, d, noak)['tank']['costs']
+    assert O._central(tc['column_graphite_per_kg']) == 2.0 and O._central(tc['storage_graphite_per_kg']) == 0.5
+    assert O.apply_scenario(noak)['costs'] == noak['costs']                  # idempotent
+    with pytest.raises(ValueError):
+        O.build_opt({'economics': {'cost_scenario': 'demo'}})
+
+
+def test_design_vars_from_inputs():
+    """design_vars from the inputs: any order, new bounds; decode / encode follow them."""
+    from thermal import optimize as O
+    dv = [list(v) for v in reversed(O.DESIGN_VARS)]
+    dv[[v[0] for v in dv].index('L')][2] = 4.0
+    opt = O.build_opt({'design_vars': dv})
+    b = dict(zip([v[0] for v in O.design_vars(opt)], O.var_bounds(opt)))
+    assert b['L'] == (3.0, 4.0)
+    x = np.array([(lo + hi) / 2 for lo, hi in O.var_bounds(opt)])
+    x[O.var_integrality(opt)] = np.round(x[O.var_integrality(opt)])
+    d = O.decode(x, opt)
+    assert abs(d['L'] - 3.5) < 1e-12
+    assert np.allclose(O.encode(d, opt), x)
+    with pytest.raises(ValueError):
+        O.build_opt({'design_vars': dv[:-1]})

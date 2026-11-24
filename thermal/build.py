@@ -24,6 +24,7 @@ import numpy as np
 
 from .components import GraphiteBlock, Pipe, StorageModule, PowerStick
 from .properties import storage_rho, storage_cp
+from .heater import heater_max_power, element as heater_element  # noqa: F401 (heater_max_power re-exported)
 from .tinless import TinlessSimulation, HeatingElement
 from .viewfactors import axial_mesh, cavity_view_factors, porous_shade_view_factors, DEFAULT_RAYS
 from .axial import AxialRadiation, VaneHybridRadiation
@@ -41,23 +42,13 @@ def load_config(path='tinless_model_input.yaml'):
             continue
 
 
-def heater_max_power(h, H):
-    """Heater max electrical power [W] for a heater of length H [m] (it spans the block
-    height): heater.max_power if given (absolute override, used by the optimizer's
-    power search), else heater.max_power_per_m x H."""
-    if h.get('max_power') is not None:
-        return float(h['max_power'])
-    if h.get('max_power_per_m') is None:
-        raise KeyError("heater: give max_power_per_m [W/m] (or an absolute max_power [W])")
-    return float(h['max_power_per_m']) * float(H)
-
-
 def build_heater(m, area_ratio=None):
     """Single-heater charge model matching a build_tinless model `m` (checkerboard: one
     heater per stick, N_h = N_ps). The heater cell holds the same graphite as the stick
     cell (same volume, height, axial mesh and radial rings) around the heater cavity:
 
-        r_hcav = heater.area_ratio * r_heater_eff,   r_heater_eff = 2 side_len / pi
+        r_hcav = heater.area_ratio * r_h,   r_h = the element's radiating radius
+                 (thermal.heater.element: tube sized from power and voltage, or rod 2 side_len / pi)
         r_out  = sqrt(V_block / (pi H_block) + r_hcav^2)
 
     The heater spans the full block height. Block starts at T_min. Outer wall adiabatic
@@ -67,7 +58,8 @@ def build_heater(m, area_ratio=None):
     cfg = m.cfg
     h = cfg['heater']
     ar = float(h['area_ratio'] if area_ratio is None else area_ratio)
-    r_h = 2 * h['side_len'] / np.pi
+    el = heater_element(h, float(m.H_block), float(m.T_min))
+    r_h = el['r_h']
     r_in = ar * r_h
     st = m.storage
     H = float(m.H_block)
@@ -86,13 +78,13 @@ def build_heater(m, area_ratio=None):
                     f_bare=m.powerstick.f_bare, f_active=m.powerstick.f_active, liner_bool=False,
                     liner_width=None, emissivity_table=m.emissivity_table)
     sim = TinlessSimulation(storage, ps, T_sur=cfg['T_sur'], block_heat_loss=cfg['block_heat_loss_bool'])
-    heater = HeatingElement(diameter=2 * r_h, max_temperature=h['max_temperature'], max_power=heater_max_power(h, H),
+    heater = HeatingElement(diameter=2 * r_h, max_temperature=h['max_temperature'], max_power=el['P'],
                             emissivity=h['emissivity'])
     if r_h >= r_in:
         raise ValueError(f"heater radius {r_h:.3f} m >= cavity radius {r_in:.3f} m (heater.area_ratio {ar})")
     kw = dict(T_block_max=float(m.T_max), dt=cfg['dt_short'], sub_steps=cfg['sub_steps'])
     return SimpleNamespace(sim=sim, storage=storage, block=block, heater=heater, r_in=r_in, r_out=r_out,
-                           r_heater=r_h, area_ratio=ar, T_min=float(m.T_min), T_max=float(m.T_max), V=V,
+                           r_heater=r_h, element=el, area_ratio=ar, T_min=float(m.T_min), T_max=float(m.T_max), V=V,
                            H=H, run_kwargs=kw)
 
 

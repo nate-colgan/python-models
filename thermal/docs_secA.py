@@ -31,6 +31,8 @@ def _src(fname):
     return _SRC[fname]
 
 
+from .heater import describe as _heater_describe
+
 def ref(fname, pattern, nth=1, span=0):
     """'file.py:N' (or 'file.py:N-M' with span) for the nth source line containing `pattern`."""
     n = 0
@@ -271,7 +273,7 @@ def sec_inputs_geometry(doc, ctx):
         ['vane octagon (closed)', f"perimeter/4 = {m.shade_side_len * 1e3:.0f} mm",
          f"r_sh = {2 * m.shade_side_len / np.pi * 1e3:.1f} mm", ref('build.py', "shade_side_len = vane_lay['l']")],
         ['cavity', f"S = {np.pi * m.r_in / 2 * 1e3:.0f} mm", f"r_in = {m.r_in * 1e3:.1f} mm", ref('build.py', 'r_in = 2.0 * S_min / np.pi')],
-        ['heater rod', f"{h['side_len'] * 1e3:.0f} mm", f"r_h = {hm.r_heater * 1e3:.1f} mm", ref('build.py', "r_h = 2 * h['side_len'] / np.pi")],
+        ['heater element', _heater_describe(hm.element), f"r_h = {hm.r_heater * 1e3:.1f} mm", ref('heater.py', 'def element')],
     ], widths=[1.5, 1.7, 1.8, 2.1], size=8.5)
     doc.p("Cross-sections are not preserved: a circle with the perimeter of a square has 4/pi = 1.27 times its "
           "area. The block volume is set directly from the energy requirement (3.4), so the graphite mass is "
@@ -419,7 +421,7 @@ def sec_inputs_geometry(doc, ctx):
            where='AR_h = heater.area_ratio (D_cavity / D_heater); p\'_max = heater.max_power_per_m, unless an absolute '
                  'heater.max_power is given (the optimizer sizes it).')
     doc.table(['quantity', 'value', 'where'], [
-        ['heater rod radius r_h (perimeter equivalent)', f"{hm.r_heater * 1e3:.1f} mm", ref('build.py', "r_h = 2 * h['side_len'] / np.pi")],
+        ['heater radiating radius r_h', f"{hm.r_heater * 1e3:.1f} mm", ref('heater.py', 'def element')],
         ['cavity radius r_hc', f"{hm.r_in * 1e3:.1f} mm (AR {hm.area_ratio:g})", ref('build.py', 'r_in = ar * r_h')],
         ['outer radius r_out,h', f"{hm.r_out * 1e3:.1f} mm", ref('build.py', 'r_out = float(np.sqrt(V / (np.pi * H)')],
         ['graphite volume', f"{hm.V:.3f} m3 (same as stick cell)", ref('build.py', 'V = np.pi * (st.block.rad_out')],

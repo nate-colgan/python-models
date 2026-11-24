@@ -33,7 +33,7 @@ The plant is a 25 MW AC, 50 h thermal battery:
 |---|---|
 | `tinless_model_input.yaml` | All physics inputs. **Generated** by cell `a8c3d501` of `tinless system model.ipynb`; never edit the file directly (see §6). |
 | `tinless system model.ipynb` | Single-design work. `a8c3d501` writes the YAML, `b2e4f810` builds and runs one discharge, `shade_open_resize`, `full_cycle` (charge→hold→discharge ledger), `heat_sim_01` / `heat_bisect_01` (heater), `tank_sys01` (plant), plus `scratch_*` study cells. |
-| `tinless system optimizer.ipynb` | System optimizer driver. Cells run in order: `opt_setup`, `opt_inputs` (OPT_INPUTS overrides), `opt_baseline`, `opt_run` (differential evolution), `opt_results`, `opt_scatter`, `opt_flux`, `opt_verify` (top designs at detailed fidelity), `opt_cycle` (full cycle of the optimum at detailed fidelity, 10–20 min), `opt_report` (Word run report), `opt_docs` (regenerates the model documentation). |
+| `tinless system optimizer.ipynb` | System optimizer driver. Cells run in order: `opt_setup`, `opt_inputs` (OPT_INPUTS overrides), `opt_baseline`, `opt_run` (differential evolution), `opt_results`, `opt_scatter`, `opt_flux`, `opt_verify` (top designs at detailed fidelity), `opt_cycle` (full cycle of the optimum at detailed fidelity, 10–20 min), `opt_report` (Word run report), `opt_docs` (regenerates the model documentation), then the separate heater-lead optimizer: `lead_md`, `lead_inputs`, `lead_run`, `lead_plots`. |
 | `thermal/build.py` | `load_config`, `build_tinless(cfg, overrides)` → model namespace `m` (stick cell); `build_heater(m, area_ratio)` (heater cell). One entry point for notebook, sweeps and optimizer. |
 | `thermal/tinless.py` | `TinlessSimulation`: `run_simulation` (discharge loop) and `run_heating_simulation` (charge loop). |
 | `thermal/axial.py` | Axial radiation model in use: ring-resolved cavity radiation with vane shades and the liner / liner bottom; supplies `dQ/dT_wall` for the implicit wall coupling. |
@@ -44,7 +44,10 @@ The plant is a 25 MW AC, 50 h thermal battery:
 | `thermal/sizing.py` | `run_discharge`, `shade_open_point`, `shade_open_resize` (block sizing). |
 | `thermal/tank.py` | Plant around the per-stick results: hot-zone layout, tank, insulation, columns, floor cooling, foundation, losses, capex. Closed-form, milliseconds. **Temperatures in °C here.** |
 | `thermal/cycle.py` | `run_cycle`: one full cycle with a closed energy ledger; `plot_layout`, `plot_timeseries`, `plot_losses`. |
-| `thermal/optimize.py` | `OPT_DEFAULTS`, `DESIGN_VARS`, `decode`/`encode`, `evaluate_design`, `run_de`, `summary`, `pareto`, `DETAILED` fidelity. |
+| `thermal/optimize.py` | `OPT_DEFAULTS`, `DESIGN_VARS` (defaults; the run's are `opt['design_vars']`), `build_opt` / `apply_scenario` / `apply_tank_costs`, `decode`/`encode`, `evaluate_design`, `run_de`, `summary`, `pareto`, `DETAILED` fidelity. |
+| `thermal/cost_scenarios.py` | Pilot / FOAK / NOAK cost overrides (from `docs/cost_scenarios_pilot_foak_noak.md`), the heater check values. |
+| `thermal/heater.py` | Heater element: tube sizing from power and voltage (`element`), mass. |
+| `thermal/heater_leads.py` | Heater current-lead optimizer, separate from the system optimizer: 1-D steady lead through the top Thermax (up to 3 zones, default graphite / W / Cu; passive or water-cooled last zone), exchange with the insulation (gap gas + radiation in series with radial Thermax conduction to `r_far`, where the Thermax has its exact 1-D k(T) profile from the block T_max at the bottom face to `T_ins_cold` at the top), lifetime cost per lead with the optimizer's cost weights. `MATERIALS` library (graphite, W, Mo, Cu, Al), `lead_context`, `evaluate`, `optimize_leads`. Tests: `tests/test_heater_leads.py`. |
 | `thermal/report.py` | Word run report (`write_report`) and `FigureStore`. |
 | `thermal/docs*.py` | Generator for the model documentation (.docx). |
 | `tests/` | pytest suite, 40 tests. `test_regression.py` compares against `baseline_local_radiation.npz`, regenerated with `tests/make_baseline.py` when physics changes on purpose. |
@@ -64,7 +67,7 @@ are °C. Energies in the optimizer records are MWh per cycle (`*_MWh`) or kWh pe
    - The block volume is scaled so that this happens at 50 h.
    - The sizing iterates (about 3–4 discharges) because T_min and the volume change the radial profile.
    - An infeasible flux raises `FluxUnreachable`.
-3. **Heater search.** Find the smallest heater power that charges in `charge_hr` (50 h) with the cavity at its minimum gap (0.25 m). The cavity grows only if the power cap is not enough. The cap is `heater.max_power_per_m` × block height, 150 kW/m in the YAML.
+3. **Heater search.** Find the smallest heater power that charges in `charge_hr` (50 h) with the cavity at its minimum gap (0.25 m). The cavity grows only if the power cap is not enough. The cap is `heater.max_power_per_m` × block height, 150 kW/m in the YAML. The heater element is resized for every power tried (`thermal/heater.py`, since 2026-11-24): a tubular graphite element (`heater.type: tube`) whose outer diameter D makes R = V²/P at `heater.voltage` (60 V DC), with wall = `wall_ratio` × D (0.1), R = ρ_e · legs² · H / A and A = π D² w (1 − w). ρ_e is the highest value of `properties.heater_graphite_resistivity` over [T_min, heater max temperature]: Mersen 2020 data, 16.5 µΩ·m at 18 °C, minimum 10.2 near 950 °C, 11.4 at 2002 °C, extrapolated linearly above that (12.2 at the 2600 °C heater max, so the design value comes from the extrapolation). The minimum cavity follows the element radius, and the charge run checks that the element can deliver the power within `max_temperature` (radiation to the cavity). Example: 576 kW → OD 273 mm × 27 mm wall, 6.25 mΩ, 9.6 kA (with the Mersen data).
 4. **Graphite wall check.** The minimum web between neighbouring cavities must be at least 0.30 m.
 5. **Tank.** `tank_system` sized on the clean stick's discharge-average AC power: N_ps = ceil(P_rated / P_stick_AC).
 6. **Lifetime-average wear.** A second discharge at twice the lifetime-mean degradation (`lifetime_mean_D`). Performance is the average of the clean and worn runs, which is the exact average over every cycle of the life for performance that is linear in wear.
@@ -133,7 +136,7 @@ popsize 10 (100 designs per generation), 25 generations. A full run is about 330
 - Shades are rotating vanes. Only flux feasibility matters, not the vane angle. The closed and open limits are ray-traced once per geometry, and the setpoint is held between them.
 - With shades on, the stick cavity is the minimum that fits the vanes around the liner; YAML `powerstick.area_ratio` is ignored.
 - Shade transmission uses straight-through (porous sheet) transmission, not diffuse.
-- Heater cavity area always comes from `heater.side_len` × `heater.area_ratio`.
+- Heater cavity radius = element radius × `heater.area_ratio` (tube: D/2; legacy `type: rod`: 2 side_len/π).
 
 **Tank / plant**
 - Column creep basis: sigma_ref = 2.81 MPa at 2400 °C (1% strain in 30 yr). Column pitch is computed. Columns are rectangular, 230 mm thick.
@@ -159,11 +162,29 @@ popsize 10 (100 designs per generation), 25 generations. A full run is about 330
 - Grafoil is available as an option: emissivity 0.5 on both faces, k = 4 W/mK, 0.5 mm. It is set aside for now.
 - Liner cost is costed as grafoil walls at $55/m² plus a CFC floor at $1000/m² × 2 × side² in either case.
 
-**Placeholder costs**
+**Where cost inputs live (since 2026-11-24)**
+- Every cost the optimizer uses is in the `opt_inputs` cell of the optimizer notebook: `economics`, `costs`, `parasitics` and `tank_costs`.
+  - `tank_costs` holds the central values of the YAML `tank.costs` rates. `optimize.apply_tank_costs` writes them into each design's config (via `design_cfg`), together with `costs.iso_graphite_per_kg` (support columns and heaters) and the tank's lost-heat economics (`elec_price`, `heater_eff = eta_in`).
+  - The YAML rates are now used only by the single-design notebook.
+- **Cost scenarios:** `economics.cost_scenario` = `'Pilot'`, `'FOAK'` or `'NOAK'` (any case; `None` = the cell as written).
+  - Data are in `thermal/cost_scenarios.py`, taken from `docs/cost_scenarios_pilot_foak_noak.md` (the company cost-model spreadsheet).
+  - Precedence: `OPT_DEFAULTS` < the inputs cell < the scenario. `O.build_opt(OPT_INPUTS)` builds the run's `opt`, and `opt['_sources']` records which keys came from the inputs cell and which from the scenario.
+  - The inputs cell prints the values the scenario changes. The run folder gets a `_pilot` / `_foak` / `_noak` suffix. The report marks the values the scenario set.
+  - In a scenario, charge electrics and inverters are 0 (folded into the interconnect).
+  - The spreadsheet's TPV efficiency is reference data only; never switch on a cell-efficiency override as part of a scenario.
+- **Heater cost** (per heater): `costs.heater_fixed` + element graphite mass × `heater_graphite_per_kg` (None = `iso_graphite_per_kg`) + `charge_electrics_per_kW` × heater power.
+  - Without a scenario, `heater_fixed` is 0.
+  - Scenario `heater_fixed` (Nate's values, 2026-11-24): Pilot $7,500, FOAK $6,000, NOAK $4,500, not scaled with heater power. The spreadsheet's 1 MW_th heater without its graphite body is $7,681 / $6,031 / $4,331, for reference.
+- **Design variables** and their bounds are the `DESIGN_VARS` list at the top of the inputs cell, passed as `OPT_INPUTS['design_vars']`.
+  - Names are fixed, but any order works, and the log rows store `x_names`.
+  - Use `O.design_vars(opt)`, `O.var_bounds(opt)` and `O.var_integrality(opt)`. Module-level `DESIGN_VARS` / `BOUNDS` are only the defaults.
+  - Current stick-length bound: 3–6 m.
+
+**Placeholder costs (no scenario)**
 
 | Item | Cost |
 |---|---|
-| Heater | $5000 each |
+| Heater | element graphite mass × $/kg: A_cross × (H_block + t_top) × `heater.density` (1850 kg/m³), at the tank `column_graphite_per_kg` central value ($10/kg) unless `costs.heater_graphite_per_kg` is set (since 2026-11-24; was $5000 each), + $75/kW supply |
 | Charge electrics | $75/kW |
 | Inverter | $100/kW (peak AC) |
 | Dry cooler | $125/kW_th |
@@ -199,6 +220,13 @@ The documentation predates these changes. Several of its "Items to review" are n
   - The ratio splits exactly: RTE = delivery (absorbed / AC bought) × cell efficiency × output (net AC / DC).
   - Runs logged before 2026-11-23 lack these fields.
 
+- **Heater leads (2026-11-24).** `thermal/heater_leads.py`; cells `opt_leads` (after `opt_inputs`) and `lead_*` at the end of the optimizer notebook.
+  - Lead model: 1-D steady, zones hot -> cold (default graphite / tungsten / water-cooled copper), each >= 5 cm (`min_zone_len`); a zone left at the minimum is tried removed (`optimize_with_skips`). Joints <= the colder material's T_max. Exact Thermax k(T) profile from block T_max (bottom face). Option: joint after the graphite opened when idle (`idle_break_after`).
+  - Results with Pilot inputs, 8.98 kA, t_top 1.5 m: water-cooled copper about $96k per lead over the life connected, $57k with the graphite joint open when idle (Nate chose that, "option 2"). Tungsten is always worth it: graphite straight to copper costs 2.5x. Stainless passive is close to copper; tungsten short because the graphite/W joint sits at W's 2500 C limit.
+  - Lifetime $/kA is flat within 3.5% over 3-12 kA, so the lead cost and losses scale with current I = P_heater / V; voltage only enters through I.
+  - **In the system optimizer (step 3):** `opt['leads']['table']` = path of a lead table (`build_lead_table`: t_top x block T_max x 2 currents, cached in `opt_runs/_lead_tables` by an input hash). `evaluate_design` interpolates it per design: capex line 'heater leads', lead Joule on the heater supply / interconnect, cooled-copper load on the heat rejection, Joule + storage drain in E_in, rejection fans; the element graphite then covers H_block only. `leads.table: None` = old behaviour.
+  - Not yet done: steps 4-5 (full lead optimization of the top designs in the verify / cycle cells with a table-error check; report section).
+
 ## 6. Workflow rules and pitfalls
 
 - **YAML:** edit only the `yaml_content = """..."""` string in cell `a8c3d501` of `tinless system model.ipynb`, then run that cell. It writes the file with UTF-8 encoding, and the file has non-ASCII comments. Editing the .yaml directly gets overwritten.
@@ -210,7 +238,7 @@ The documentation predates these changes. Several of its "Items to review" are n
 - **Module reloads:** the setup cell reloads `thermal.*`; `opt_cycle` reloads `thermal.cycle`; `opt_report` reloads `thermal.report`. Changes elsewhere need the setup cell or a kernel restart.
 - **`report.docx` open in Word** locks the file. `write_report` then saves `report_<timestamp>.docx` instead.
 - **`panel_efficiency`** is always called with a flux argument by the model. An override placed after the `if flux is not None` branch never takes effect.
-  - On 2026-11-23 a flat-55% override (the engineering lead's cell-efficiency target) was used for a what-if rerun of the optimum. It is commented out now.
+  - On 2026-11-23 a flat-55% override (the engineering lead's cell-efficiency target) was used for a what-if rerun of the optimum. It was active again on 2026-11-24: check `properties.panel_efficiency` before any run.
   - Make sure no override is active before an optimizer run. The regression test fails if one is.
 - **`print_outputs_bool`** only controls printing; it doesn't affect optimizer runtime.
 - **Screening vs detailed fidelity:** the optimizer ranks designs at screening fidelity. The verify and cycle cells re-run the top designs at `O.DETAILED` (1/3 m rings, 2^14 rays, full timestep), and the report tabulates the difference.

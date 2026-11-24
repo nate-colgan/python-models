@@ -31,7 +31,7 @@ emissivity_tables:
 storage:
   avg_flux: 10            # average power density to extract [W/cm^2]
   duration_hr: 50          # discharge duration [hr]
-  T_min: 1873              # minimum (empty) block temperature [K]
+  T_min: 2173              # minimum (empty) block temperature [K]
   block_temp_range: 500    # operating temperature swing [K]
   L: 3                   # axial length [m]
   block_height: 10       # block + heater + shade height [m]; null -> L. Stick + liner (length L) hang top-aligned
@@ -94,16 +94,25 @@ radiation:
 # -- Heater ------------------------------------------------------------------
 # Central cylindrical resistive heating element used during charging.
 # The heater spans the block height; max power = max_power_per_m x block_height.
+# type tube: tubular graphite resistive element sized electrically (thermal/heater.py):
+#   R = voltage^2 / P = rho_e x legs^2 x H / A,  A = pi D^2 w (1 - w),  w = wall_ratio
+#   rho_e = properties.heater_graphite_resistivity (Mersen 2020 data to 2002 C, extrapolated above), highest
+#   over [T_min, max_temperature]. The element is resized for every power the charge search tries.
 # Phase 1: max power supplied; T_heater rises as graphite warms.
 # Phase 2: T_heater reaches max_temperature; power reduces to hold that temp.
 # Heating stops when block T_avg reaches T_min + block_temp_range.
 heater:
-  side_len: 0.15            # m   (heater rod side length)
-  area_ratio: 4.5           # D_cavity / D_heater; heater cavity also sets the tank layout (tank.py)
+  type: tube                # tube (sized from power + voltage, below) | rod (square, side_len)
+  voltage: 60.0             # V   DC across the element at full power (tube)
+  wall_ratio: 0.1           # -   tube wall thickness / outer diameter (tube)
+  legs: 1                   # -   tube slit into this many strips in series (1 = down the tube, separate return)
+  density: 1850.0           # kg/m3 element graphite (mass -> cost at the column graphite $/kg)
+  side_len: 0.15            # m   rod side length (type rod only)
+  area_ratio: 2.81           # D_cavity / D_heater; heater cavity also sets the tank layout (tank.py)
   max_temperature: 2873     # K   (maximum heater surface temperature)
-  max_power_per_m: 150000   # W/m (maximum electrical power per m of heater length)
+  max_power_per_m: 53900   # W/m (maximum electrical power per m of heater length)
   emissivity: 0.85           # gray-body emissivity of heater surface
-  charge_hr: 30           # target charge time [h] for the heater-cavity search; null -> end_time
+  charge_hr: 50           # target charge time [h] for the heater-cavity search; null -> end_time
 
 # -- System-scale steel tank (thermal/tank.py; steel_tank_system_brief.md) ----
 # Builds the plant around the per-stick results: checkerboard hot zone, API 650

@@ -283,6 +283,37 @@ def storage_cp(temp):
     return 2000
     #return np.interp(temp_C_interp, temp_C, cp_arr) * 1000
 
+# Heater graphite electrical resistivity vs temperature, Mersen 2020 data (Nate, 2026-11-24):
+# temperature [C], resistivity [milli-ohm cm] (1 milli-ohm cm = 1e-5 ohm m).
+_HEATER_RHO_T_C = np.array([
+    18, 33, 47, 75, 93, 118, 140, 162, 180, 206, 237, 268, 304, 341, 383, 428, 465, 503, 538, 578,
+    620, 660, 693, 728, 759, 788, 812, 846, 879, 910, 949, 994, 1031, 1078, 1113, 1153, 1213, 1272, 1332,
+    1387, 1445, 1493, 1531, 1577, 1608, 1646, 1697, 1743, 1792, 1834, 1896, 1938, 1964, 2002], dtype=float)
+_HEATER_RHO_MOHM_CM = np.array([
+    1.6486, 1.6167, 1.5848, 1.5289, 1.4890, 1.4372, 1.3933, 1.3614, 1.3294, 1.2975, 1.2615, 1.2335, 1.2095,
+    1.1855, 1.1614, 1.1453, 1.1293, 1.1172, 1.0972, 1.0811, 1.0809, 1.0688, 1.0568, 1.0487, 1.0486, 1.0485,
+    1.0364, 1.0403, 1.0362, 1.0361, 1.0240, 1.0318, 1.0317, 1.0275, 1.0393, 1.0312, 1.0310, 1.0427, 1.0465,
+    1.0543, 1.0620, 1.0658, 1.0657, 1.0695, 1.0694, 1.0892, 1.0850, 1.0928, 1.1006, 1.1084, 1.1201, 1.1160,
+    1.1199, 1.1357])
+# above the data (heater max 2600 C): from the last point at the slope of a straight-line fit to
+# the points from 1500 C up (continuous at 2002 C)
+_HEATER_RHO_SLOPE = np.polyfit(_HEATER_RHO_T_C[_HEATER_RHO_T_C >= 1500],
+                               _HEATER_RHO_MOHM_CM[_HEATER_RHO_T_C >= 1500], 1)[0]     # milli-ohm cm per K
+
+
+def heater_graphite_resistivity(temp):
+    """Electrical resistivity [ohm m] of the heater-element graphite at temp [K].
+    Mersen 2020 data, 18-2002 C (linear interpolation; constant below 18 C). Above 2002 C:
+    extrapolated from the last point at the slope of the data from 1500 C up (1.40e-4 milli-ohm
+    cm per K; ~1.22 milli-ohm cm at 2600 C, the heater max): an extrapolation, not data. Minimum ~1.02 milli-ohm cm near
+    950 C. Array-safe."""
+    T_C = np.asarray(temp, dtype=float) - 273.15
+    rho = np.where(T_C <= _HEATER_RHO_T_C[-1],
+                   np.interp(T_C, _HEATER_RHO_T_C, _HEATER_RHO_MOHM_CM),
+                   _HEATER_RHO_MOHM_CM[-1] + _HEATER_RHO_SLOPE * (T_C - _HEATER_RHO_T_C[-1]))
+    return (rho * 1e-5)[()]
+
+
 def storage_tcx(temp):
     #storage graphite conductivity
     temp_C = np.array([300, 750, 1200, 1995])
@@ -354,6 +385,10 @@ def panel_efficiency(bandgap: float, T_emitter: float, flux: float = None) -> fl
         )
     a, b, c = coeffs
     eta_0 = a * T_emitter**2 + b * T_emitter + c
+    # TEMP 2026-11-23: flat 55% cell efficiency (engineering lead's target), no temperature
+    # or flux dependence; wear (1 - D_cell) is still applied by the callers. Restore the
+    # two lines below (and delete these) before the next optimizer run.
+    #return np.full_like(np.asarray(T_emitter, dtype=float), 0.55)[()]
     if flux is not None:
         return eta_0 * (0.998 ** (2 * flux * (1-eta_0)))
     return eta_0

@@ -76,7 +76,7 @@ def yaml_table(doc, yaml_path, prefix=None, exclude=(), size=8):
 
 
 def opt_inputs_table(doc, opt, groups=None, size=8):
-    flat = _flatten(opt)
+    flat = _flatten({k: v for k, v in opt.items() if not k.startswith('_') and k != 'design_vars'})
     rows = []
     for k, v in flat.items():
         g = k.split('.')[0] if '.' in k else 'plant'
@@ -125,7 +125,7 @@ def sec_optimizer(doc, opt):
           "(the powerstick side is a fraction of the room left in the liner; the block height a fraction between "
           "the stick length and H_max). Shade thickness is an integer number of 1/8 in.")
     rows = []
-    for name, lo, hi, integer, desc in O.DESIGN_VARS:
+    for name, lo, hi, integer, desc in O.design_vars(opt):
         rows.append([name, f"{lo:g}", f"{hi:g}", 'yes' if integer else 'no', desc])
     doc.table(['variable', 'lower', 'upper', 'integer', 'meaning'], rows, widths=[0.9, 0.6, 0.6, 0.6, 4.4])
     g = opt['geometry']
@@ -206,26 +206,27 @@ def sec_optimizer(doc, opt):
     doc.p("Initial capex lines (all x (1 + soft costs)):")
     doc.bl([
         'tank: containment, insulation, supports, floor and foundation (section 5.8, central values of the YAML cost '
-        'triples);',
+        'triples, replaced by the optimizer inputs tank_costs and costs.iso_graphite_per_kg where given);',
         'storage graphite: graphite mass x storage_graphite_per_kg;',
         'powersticks: cells (cell_per_cm2 x 4 s L (1 - f_bare)) + stick_per_m x L + stick_fixed, per stick;',
         'liners: walls 4 s L x liner_wall_per_m2 + floor liner_floor_area_factor s^2 x liner_floor_per_m2;',
         'shades: 8 RGF vanes (l x t x H) x shade_rgf_per_m3 + 8 axles (t_top + axle_extra) x shade_axle_per_m + '
         'drive (one motor + linkage per stick, or one motor per vane);',
-        'heaters: heater_fixed + charge_electrics_per_kW x heater power, per heater;',
+        'heaters, per heater: heater_fixed + element graphite A_cross x (H_block + t_top) x heater.density x '
+        'heater_graphite_per_kg (default the iso-molded graphite price) + charge_electrics_per_kW x heater power;',
         'inverters: inverter_per_kW x max(P_rated, peak plant AC output);',
         'grid interconnect: interconnect_per_kW x max(all heaters at full power / eta_in, peak AC output);',
         'heat rejection: heat_rejection_per_kWth x N x peak stick heat rejection.',
     ])
     doc.h3('Cost and economic inputs')
-    opt_inputs_table(doc, opt, groups=('costs', 'economics'))
+    opt_inputs_table(doc, opt, groups=('costs', 'economics', 'tank_costs'))
 
     doc.h2('9.6 Differential evolution')
     doc.p("scipy.optimize.differential_evolution with: strategy 'best1bin' (scipy default), mutation factor "
           "dithered in [0.5, 1.0) each generation, crossover probability 0.7, Sobol initial population, deferred "
           "updating (the whole generation is evaluated in parallel, then the population is updated), integer handling "
           "for the shade thickness (integrality), no polishing, the YAML design as one initial member (x0). Population "
-          "= popsize x " + str(len(O.DESIGN_VARS)) + " variables; stop after maxiter generations or when the population's objective spread "
+          "= popsize x " + str(len(O.design_vars(opt))) + " variables; stop after maxiter generations or when the population's objective spread "
           "std(f) <= tol x |mean(f)| (tol = 1e-3). Designs are evaluated in a process pool (one thread per worker).")
     doc.p("Typical settings in the notebook: WORKERS 20, POPSIZE 10 (90 designs per generation), MAXITER 25, SEED 0; "
           "one design takes about 1-2 min on one core (screening settings), so a run is roughly 2-4 hours.")

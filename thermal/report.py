@@ -14,6 +14,7 @@ import os
 import subprocess
 
 import numpy as np
+from .heater import describe as _heater_describe
 
 INCH = 0.0254
 C2K = 273.15
@@ -44,6 +45,8 @@ class FigureStore:
 # Descriptions of the non-optimized inputs (thermal.optimize.OPT_DEFAULTS keys)
 # --------------------------------------------------------------------------
 DESC = {
+    'leads.table': ('', 1, 'heater lead table (heater_leads.build_lead_table): lead cost and losses interpolated per design; None = leads not modelled'),
+    'leads.n_per_heater': ('', 1, 'current leads per heater (supply + return)'),
     'P_rated': ('MW', 1e-6, 'plant AC export power'),
     'duration_hr': ('h', 1, 'discharge duration at P_rated (energy target, enforced on clean performance)'),
     'charge_hr': ('h', 1, 'design charge time: heater power, then heater cavity, sized to meet it'),
@@ -57,7 +60,26 @@ DESC = {
     'costs.cell_per_cm2': ('$/cm2', 1, 'cells, per cm2 of cell-covered stick face (also each replacement)'),
     'costs.stick_per_m': ('$/m', 1, 'powerstick, per m of length'),
     'costs.stick_fixed': ('$', 1, 'powerstick, fixed per stick'),
-    'costs.heater_fixed': ('$', 1, 'heater element, per heater (placeholder)'),
+    'economics.cost_scenario': ('', 1, 'cost scenario (thermal/cost_scenarios.py) applied over the inputs; '
+                                       'None = inputs as written'),
+    'costs.iso_graphite_per_kg': ('$/kg', 1, 'iso-molded graphite: support columns and heaters (None = YAML '
+                                             'column_graphite_per_kg)'),
+    'costs.heater_fixed': ('$', 1, 'heater, fixed per heater (machining, terminals, assembly, install)'),
+    'costs.heater_graphite_per_kg': ('$/kg', 1, 'heater element graphite (None = iso_graphite_per_kg)'),
+    'tank_costs.storage_graphite_per_kg': ('$/kg', 1, 'storage block graphite (pass-through line)'),
+    'tank_costs.steel_per_t': ('$/t', 1, 'tank shell, bottom, roof steel, field-erected'),
+    'tank_costs.deck_per_t': ('$/t', 1, 'deck trusses'),
+    'tank_costs.structural_steel_per_kg': ('$/kg', 1, 'bearing plates, fabricated'),
+    'tank_costs.thermax_per_kg': ('$/kg', 1, 'Thermax insulation (side, top, bottom)'),
+    'tank_costs.oxide_per_kg': ('$/kg', 1, 'oxide posts under the graphite columns'),
+    'tank_costs.gas_tight_fixed': ('$', 1, 'gas tightness, nozzles, gas holder'),
+    'tank_costs.per_penetration': ('$', 1, 'per stick + heater roof penetration'),
+    'tank_costs.tie_grid': ('$', 1, 'column tie grid, per column'),
+    'tank_costs.floor_per_m2': ('$/m2', 1, 'floor plate upgrade, fins, welds'),
+    'tank_costs.slab_per_m2': ('$/m2', 1, 'HT concrete slab, rails, firebrick caps'),
+    'tank_costs.cellular_glass_per_m2': ('$/m2', 1, 'cellular glass'),
+    'tank_costs.mat_per_m3': ('$/m3', 1, 'structural mat'),
+    'tank_costs.fans_per_m3s': ('$/(m3/s)', 1, 'floor-cooling fans, louvres, exhaust, controls'),
     'costs.charge_electrics_per_kW': ('$/kW', 1, 'heater power supply (placeholder)'),
     'costs.inverter_per_kW': ('$/kW', 1, 'inverters, sized on peak plant AC output'),
     'costs.heat_rejection_per_kWth': ('$/kWth', 1, 'dry coolers, sized on peak stick heat rejection'),
@@ -99,7 +121,7 @@ DESC = {
     'fidelity.vane_rays': ('', 1, 'rays per surface, vane view factors'),
     'fidelity.heater_ar_tol': ('', 1, 'heater cavity search tolerance'),
 }
-COST_GROUPS = ('costs', 'economics')        # shown with the cost results
+COST_GROUPS = ('costs', 'economics', 'tank_costs')        # shown with the cost results
 
 # optimizer variable -> (design key, unit, scale, format)
 VAR_PHYS = {
@@ -336,12 +358,21 @@ class _Doc:
 # --------------------------------------------------------------------------
 # Sections
 # --------------------------------------------------------------------------
+def _scenario_text(opt):
+    from .optimize import scenario_name
+    from .cost_scenarios import NOTES
+    sc = scenario_name(opt)
+    return (f"{sc.upper()}: {NOTES[sc]} Values it sets are marked in the cost tables." if sc
+            else "none (the inputs cell as written)")
+
+
 def _key_results(doc, b, ctx):
     d = b['design']
     hs = b.get('heater', {})
     cy = ctx.get('cycle')
     rows = [
         ('Net round-trip efficiency (life average)', f"{b['RTE'] * 100:.1f}%"),
+        ('Cost scenario', _scenario_text(ctx['opt'])),
         ('Plant', f"{ctx['opt']['P_rated'] / 1e6:.0f} MW x {ctx['opt']['duration_hr']:.0f} h: {b['N_ps']} powersticks "
                   f"+ {b['N_ps']} heaters"),
         ('Block', f"{b['T_min_C']:.0f} - {d['T_max_C']:.0f} C (swing {b['swing']:.0f} C), {d['H_block']:.2f} m tall"),
@@ -359,14 +390,15 @@ def _key_results(doc, b, ctx):
     doc.kv(rows)
 
 
-def _variables(doc, b):
+def _variables(doc, b, opt):
     from . import optimize as O
     x = b.get('x')
+    xs = dict(zip(b.get('x_names') or O.VAR_NAMES, x)) if x is not None else {}
     d = b['design']
     rows = []
-    for i, (name, lo, hi, integer, desc) in enumerate(O.DESIGN_VARS):
+    for name, lo, hi, integer, desc in O.design_vars(opt):
         key, unit, sc, f = VAR_PHYS.get(name, (name, '', 1, '.3g'))
-        xv = x[i] if x is not None else None
+        xv = xs.get(name)
         at = ''
         if xv is not None and hi > lo:
             u = (xv - lo) / (hi - lo)
@@ -385,7 +417,10 @@ def _variables(doc, b):
                                          f"{'converged' if b['sizing_converged'] else 'NOT converged'})"),
         ('Heater power (sized for charge_hr)', f"{h.get('P_heater', np.nan) / 1e3:,.0f} kW"),
         ('Heater cavity (sized)', f"{b['heater_cavity_D'] * 1e3:.0f} mm dia (area ratio {b['heater_area_ratio']:.2f})"),
-    ])
+    ] + ([('Heater element (sized for that power)', f"{_heater_describe(h['element'])}; "
+                                                    f"{b.get('m_heater_kg', np.nan):,.0f} kg graphite at "
+                                                    f"${b.get('heater_per_kg', np.nan):.2f}/kg")]
+         if h.get('element') else []))
 
 
 def _design(doc, b):
@@ -455,7 +490,8 @@ def _cycle(doc, cy):
                   f"discharge {cy.t_discharge_hr:.1f} h"),
         ('Block', f"{cy.T_min_C:.0f} - {cy.T_max_C:.0f} C, r {cy.m.r_in:.3f} - {cy.m.r_out:.3f} m x "
                   f"{cy.m.H_block:.2f} m (volume factor {float(s.get('volume_factor', 1) or 1):.3f})"),
-        ('Heater', f"{cy.hm.heater.max_power / 1e3:,.0f} kW, cavity {2 * cy.hm.r_in * 1e3:.0f} mm"),
+        ('Heater', f"{cy.hm.heater.max_power / 1e3:,.0f} kW, cavity {2 * cy.hm.r_in * 1e3:.0f} mm, "
+                   f"element {_heater_describe(cy.hm.element)}"),
         ('Sticks', f"{cy.N}"),
     ])
     rows, last = [], None
@@ -709,8 +745,9 @@ def _costs(doc, b, opt, opt_inputs, verified):
 
 
 def _input_tables(doc, opt, opt_inputs, include=None, exclude=()):
-    flat = _flatten(opt)
+    flat = _flatten({k: v for k, v in opt.items() if not k.startswith('_') and k != 'design_vars'})
     given = set(_flatten(opt_inputs or {}))
+    srcs = opt.get('_sources') or {}
     groups = {}
     for k, v in flat.items():
         g = k.split('.')[0] if '.' in k else 'plant'
@@ -726,7 +763,8 @@ def _input_tables(doc, opt, opt_inputs, include=None, exclude=()):
             rows.append([k.split('.', 1)[-1] if '.' in k else k, _fmt(vv), unit,
                          (desc.replace(' (placeholder)', '') + (' [estimate]' if est else ''),
                           {'color': WARN} if est else {}),
-                         '' if k in given else ('default', {'color': DIM, 'italic': True})])
+                         (srcs[k], {'color': WARN, 'italic': True}) if str(srcs.get(k, '')).startswith('scenario')
+                         else '' if k in given else ('default', {'color': DIM, 'italic': True})])
         doc.para(g, size=10).runs[0].bold = True
         doc.table(['input', 'value', 'unit', 'description', ''], rows, widths=[1.7, 0.8, 0.7, 3.3, 0.6])
 
@@ -762,6 +800,13 @@ def as_run_cfg(base_cfg, best, opt):
             src[k] = 'sizing output'
         elif k not in base_flat or base_flat[k] != v:
             src[k] = 'optimizer input'
+            o = (opt.get('_sources') or {})
+            sk = ('costs.iso_graphite_per_kg' if k == 'tank.costs.column_graphite_per_kg'
+                  else 'tank_costs.' + k.split('.')[-1] if k.startswith('tank.costs.') else None)
+            if sk and str(o.get(sk, '')).startswith('scenario'):
+                src[k] = o[sk]
+            elif sk:
+                src[k] = 'optimizer cost input'
         else:
             src[k] = 'YAML'
     return cfg, src
@@ -851,7 +896,7 @@ def write_report(out_dir, ctx):
     if best:
         b = best[0]
         doc.h1(f"{next(sec)}. Optimized variables: ranges and optimum")
-        _variables(doc, b)
+        _variables(doc, b, opt)
         doc.h1(f"{next(sec)}. Optimal design")
         _design(doc, b)
         cy = ctx.get('cycle')

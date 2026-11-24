@@ -229,8 +229,9 @@ def _stick_geometry(m):
     E_th = rho * V * quad(lambda T: float(storage_cp(T)), T_lo, T_hi)[0]
     hc = m.cfg.get('heater', {}) if isinstance(m.cfg, dict) else {}
     A_h = None
-    if hc.get('side_len') and hc.get('area_ratio'):
-        A_h = math.pi * (2 * hc['side_len'] / math.pi * hc['area_ratio']) ** 2
+    if hc.get('area_ratio') and (hc.get('type', 'rod') == 'tube' or hc.get('side_len')):
+        from .heater import element
+        A_h = math.pi * (element(hc, H, T_lo)['r_h'] * hc['area_ratio']) ** 2
     return dict(r_in=rin, r_out=rout, H=H, V=V, T_lo=T_lo, T_hi=T_hi, rho=rho, E_th=E_th, A_h=A_h,
                 L=float(m.L))
 
@@ -804,7 +805,7 @@ def _system(hz, c, T_max, hist=None, stick=None):
 
 def tank_system(stick, cfg_tank=None):
     """Full system from per-stick inputs (StickInputs). The heater cavity comes from the
-    heater block (pi (2 side_len / pi * area_ratio)^2, via stick_from_run)."""
+    heater block (pi (r_h x area_ratio)^2, r_h from thermal.heater.element, via stick_from_run)."""
     c = merge_defaults(cfg_tank)
     A_h = stick.A_hcav_default
     if A_h is None:
