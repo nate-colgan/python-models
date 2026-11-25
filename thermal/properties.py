@@ -385,10 +385,16 @@ def panel_efficiency(bandgap: float, T_emitter: float, flux: float = None) -> fl
         )
     a, b, c = coeffs
     eta_0 = a * T_emitter**2 + b * T_emitter + c
-    # TEMP 2026-11-23: flat 55% cell efficiency (engineering lead's target), no temperature
-    # or flux dependence; wear (1 - D_cell) is still applied by the callers. Restore the
-    # two lines below (and delete these) before the next optimizer run.
-    #return np.full_like(np.asarray(T_emitter, dtype=float), 0.55)[()]
     if flux is not None:
         return eta_0 * (0.998 ** (2 * flux * (1-eta_0)))
     return eta_0
+
+
+def cell_efficiency(bandgap, T_emitter, flux=None, fixed=None):
+    """TPV cell efficiency used by the model: the quadratic fit panel_efficiency(bandgap, T_emitter,
+    flux), or with `fixed` (a number, e.g. 0.55: YAML powerstick.cell_efficiency, set per design by
+    the optimizer's cells.efficiency / the NOAK cost scenario) that flat value, with no emitter-
+    temperature or flux dependence. Wear (1 - D_cell) is applied by the callers in both cases."""
+    if fixed is not None:
+        return np.full_like(np.asarray(T_emitter, dtype=float), float(fixed))[()]
+    return panel_efficiency(bandgap, T_emitter, flux=flux)

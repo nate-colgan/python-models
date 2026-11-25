@@ -10,6 +10,7 @@ Writes <run dir>/report.docx (figures embedded), <run dir>/figures/*.png and
 import datetime as _dt
 import io
 import json
+import math
 import os
 import subprocess
 
@@ -95,6 +96,8 @@ DESC = {
     'costs.shade_motor': ('$', 1, 'per motor incl. driver (placeholder)'),
     'costs.shade_linkage': ('$', 1, 'per stick, linkage drive (placeholder)'),
     'parasitics.heat_rejection_kWe_per_kWth': ('kWe/kWth', 1, 'dry-cooler fans + pumps per kW rejected'),
+    'cells.efficiency': ('-', 1, 'TPV cell efficiency: None = quadratic fit in the emitter (liner) temperature with '
+                                 'the flux derate; a number = that flat efficiency (NOAK scenario: 0.55)'),
     'deposition.d_dead_nm': ('nm', 1, 'deposit at which cells are dead (D = deposit / d_dead)'),
     'deposition.emis_end': ('-', 1, 'bare / inactive area emissivity at D = 1'),
     'deposition.cell_replace_D': ('-', 1, 'replace cells at this degradation'),
@@ -105,7 +108,9 @@ DESC = {
     'sizing.max_iter': ('', 1, 'shade-open sizing passes, max'),
     'sizing.swing_guess': ('K', 1, 'first guess of the swing'),
     'geometry.ps_liner_gap': ('m', 1, 'min powerstick -> liner clearance per side'),
-    'geometry.heater_min_gap': ('m', 1, 'min heater -> cavity wall clearance'),
+    'geometry.heater_min_gap': ('m', 1, 'min heater -> cavity wall clearance (None = arc clearance V / '
+                                        'heater_arc_V_per_in)'),
+    'geometry.heater_arc_V_per_in': ('V/in', 1, 'arcing breakdown across the heater gap: min gap = heater voltage / this'),
     'geometry.H_max': ('m', 1, 'block height upper bound'),
     'geometry.min_lower_zone': ('m', 1, 'block always this much taller than the stick (lower zone)'),
     'geometry.T_cap_C': ('C', 1, 'max block temperature'),
@@ -382,8 +387,15 @@ def _key_results(doc, b, ctx):
         ('Heater', f"{hs.get('P_heater', np.nan) / 1e3:,.0f} kW each; grid interconnect "
                    f"{b['interconnect_kW'] / 1e3:.1f} MW"),
     ]
+    if b.get('leads'):
+        rl = _lead_rte(b, ctx['opt'])
+        rows.append(('Heater leads (in the RTE above)', f"{b['E_lead_lost_MWh']:,.0f} MWh lost per cycle; "
+                     f"${b['leads']['total'] * b['N_ps'] * int((ctx['opt'].get('leads') or {}).get('n_per_heater', 2)) / 1e6:,.1f}M "
+                     f"lifetime; RTE without them {rl[0] * 100:.1f}%"))
     if cy is not None:
-        rows.append(('Full-cycle check (detailed settings, clean cells)', f"net RTE {cy.RTE * 100:.1f}%"))
+        rows.append(('Full-cycle check (detailed settings, clean cells)', f"net RTE {cy.RTE * 100:.1f}%"
+                     + (' (incl. heater leads)' if getattr(cy, 'lead', None) else
+                        ' (without heater leads: re-run the full-cycle cell)' if b.get('leads') else '')))
     for k, p in _rte_parts(b, cy).items():
         rows.append((f"RTE / average cell efficiency ({k})",
                      f"{p['frac'] * 100:.1f}% (RTE {p['RTE'] * 100:.1f}% / cell {p['eta'] * 100:.1f}%)"))
@@ -493,7 +505,9 @@ def _cycle(doc, cy):
         ('Heater', f"{cy.hm.heater.max_power / 1e3:,.0f} kW, cavity {2 * cy.hm.r_in * 1e3:.0f} mm, "
                    f"element {_heater_describe(cy.hm.element)}"),
         ('Sticks', f"{cy.N}"),
-    ])
+    ] + ([('Heater leads', f"{cy.lead['n']} leads at {cy.lead['I'] / 1e3:.2f} kA (lead table, heater power as run): "
+                           f"Joule {cy.lead['E_joule'] * J:,.1f} MWh + from the storage {cy.lead['E_drain'] * J:+,.1f} MWh "
+                           f"per cycle (ledger group 'heater leads')")] if getattr(cy, 'lead', None) else []))
     rows, last = [], None
     for g, lab, v in cy.ledger:
         bold = {'bold': True} if g == 'output' else {}
@@ -502,6 +516,292 @@ def _cycle(doc, cy):
         last = g
     doc.table(['group', 'where the electricity goes', 'MWh / cycle', 'kWh / stick', '% of AC in'], rows,
               widths=[1.5, 2.6, 1.0, 1.0, 1.0])
+
+
+def _lead_rte(b, opt):
+    """Net RTE of the same design without its lead losses (Joule, storage drain, rejection fans)."""
+    ld = b.get('leads')
+    if not ld:
+        return None
+    eco = opt['economics']
+    n = b['N_ps'] * int((opt.get('leads') or {}).get('n_per_heater', 2))
+    t_ch = b['t_charge_hr'] * 3600
+    t_id = max(8760.0 / eco['cycles_per_year'] * 3600 - t_ch, 0.0)
+    E_rej = n * (max(ld['Q_rej_charge'], 0.0) * t_ch + max(ld['Q_rej_idle'], 0.0) * t_id) / 3.6e9
+    fan = opt['parasitics']['heat_rejection_kWe_per_kWth'] * E_rej
+    E_in = b['E_in_MWh'] - b['E_lead_lost_MWh'] / eco['eta_in']
+    return (b['E_net_MWh'] + fan) / E_in, fan
+
+
+def _heaters(doc, b, ctx, out_dir):
+    """Heaters and their current leads: element, sizing, the lead-table costs and losses the
+    optimizer used, and (ctx['lead_detail']) the full lead optimization of a top design."""
+    opt = ctx['opt']
+    hs = b.get('heater', {}) or {}
+    el = hs.get('element') or {}
+    N = b['N_ps']
+    eco = opt['economics']
+    ld = b.get('leads')
+    doc.para("Every stick has one heater in its own round cavity. The optimizer sizes each design's heater for the "
+             f"target charge time (charge_hr {opt['charge_hr']:g} h): the smallest power that charges the block in "
+             "that time with the cavity at its minimum clearance; the cavity grows only if the power cap is not "
+             "enough. The graphite tube element is sized for that power at the supply voltage. Each heater's "
+             "current comes up through the top insulation to the deck in two current leads (supply + return).")
+    doc.h2('Heater')
+    rows = [
+        ('Heaters', f"{N}, one per stick"),
+        ('Power each (sized for charge_hr)', f"{hs.get('P_heater', np.nan) / 1e3:,.0f} kW; charge {b['t_charge_hr']:.1f} h"),
+        ('Cavity', f"{b['heater_cavity_D'] * 1e3:.0f} mm dia (cavity / element radius {b['heater_area_ratio']:.2f})"
+                   + (f"; minimum heater-wall gap {hs['min_gap'] * 1e3:.0f} mm" if hs.get('min_gap') else '')
+                   + (f" (arc clearance {el.get('V', 0):g} V / {opt['geometry'].get('heater_arc_V_per_in', 7.5):g} V/in)"
+                      if hs.get('min_gap') and opt['geometry'].get('heater_min_gap') is None else '')),
+    ]
+    if el:
+        rows.append(('Element', _heater_describe(el)))
+        if el.get('type') == 'tube':
+            rows.append(('Electrical', f"{el['V']:g} V DC at full power, {el['I'] / 1e3:,.2f} kA, "
+                                       f"{el['R'] * 1e3:.3f} mOhm (graphite resistivity {el['rho_e'] * 1e6:.1f} "
+                                       f"uOhm m, the highest over the operating range), {el.get('legs', 1)} leg(s)"))
+    rows += [
+        ('Element graphite', f"{b.get('m_heater_kg', np.nan):,.0f} kg per heater over "
+                             + ("the block height only (the leads carry the current through the roof insulation)"
+                                if ld else "the block height + top insulation (leads not modelled)")
+                             + f", ${b.get('heater_per_kg', np.nan):.2f}/kg; heater ${b.get('heater_cost_each', np.nan):,.0f} each"),
+        ('Plant charging draw', f"{b['P_charge_ac_kW'] / 1e3:,.1f} MW AC (all heaters at full power"
+                                + (" + lead Joule heat" if ld else '') + f", / eta_in {eco['eta_in']:g})"),
+    ]
+    doc.kv(rows)
+    if not ld:
+        doc.para("Heater leads were not modelled in this run (opt['leads']['table'] = None): the element was costed "
+                 "through the top insulation and the leads' losses are not in the efficiency.", color=WARN)
+        return
+    li = (opt.get('leads') or {})
+    n_ph = int(li.get('n_per_heater', 2))
+    lt = None
+    try:
+        from .optimize import lead_table
+        lt = lead_table(opt)
+    except Exception:
+        pass
+    tab = (lt.data.get('table') if lt else None) or {}
+    zones = ' / '.join(tab.get('zones') or ['graphite', 'tungsten', 'copper'])
+    doc.h2('Current leads in the optimizer (lead table)')
+    doc.para(f"Each lead runs from the element at the bottom face of the top Thermax up through it ({b['design']['t_top']:.2f} m, "
+             f"the design's t_top) to the deck: {zones} in series, hot to cold, the last zone water-cooled"
+             + (f", the joint after the {tab['idle_break_after']} opened while the heater is off (hold and discharge)"
+                if tab.get('idle_break_after') else '') + ". "
+             "Before the run, the optimal lead (lowest lifetime cost per lead with the run's costs and electricity "
+             "price) was found on a grid of t_top x block T_max at two currents; every design gets its leads' cost "
+             "and losses interpolated from that table at its own heater current, t_top and T_max. They are in the "
+             "objective, the capex and the round-trip efficiency:")
+    doc.bullets([
+        "capex: a heater-leads line (lead material + joints), the lead Joule power on the heater supply and grid "
+        "interconnect, and the heat the copper rejects on the heat-rejection capacity;",
+        "energy: lead Joule heat while charging is bought; the heat the leads draw from the storage (net over the "
+        "cycle; negative while charging when Joule heat flows down into the block) is put back by the heaters; "
+        "dry-cooler fans on the heat the copper rejects.",
+    ])
+    t_ch = b['t_charge_hr']
+    t_id = 8760.0 / eco['cycles_per_year'] - t_ch
+    rows = [
+        ('Lead table', f"{os.path.basename(str(lt.path)) if lt else li.get('table')} (scenario "
+                       f"{(lt.data.get('scenario') if lt else None) or 'none'}, "
+                       f"{lt.data.get('elec_price') if lt else eco['elec_price']:g} $/MWh)"),
+        ('Leads', f"{n_ph} per heater, {n_ph * N} in the plant; {ld['I_kA']:.2f} kA each"
+                  + (" (table clamped: design outside its grid)" if ld.get('clamped') else '')),
+        ('Per lead, lifetime', f"${ld['total']:,.0f} = capex ${ld['capex']:,.0f} + energy ${ld['energy_cost']:,.0f} "
+                               f"(material ${ld['material']:,.0f} before soft costs)"),
+        ('Per lead, charging', f"Joule {ld['Q_J_charge'] / 1e3:.2f} kW, from the storage {ld['drain_charge'] / 1e3:+.2f} kW, "
+                               f"rejected {ld['Q_rej_charge'] / 1e3:.2f} kW ({t_ch:.1f} h per cycle)"),
+        ('Per lead, heater off', f"from the storage {ld['drain_idle'] / 1e3:+.2f} kW, rejected {ld['Q_rej_idle'] / 1e3:.2f} kW "
+                                 f"({t_id:.0f} h per cycle)"),
+        ('Plant capex line (before soft costs)', f"${b['capex_lines'].get('heater leads (graphite / W / water-cooled Cu)', 0.0):,.0f}"
+         if b.get('capex_lines') else '-'),
+        ('Plant energy per cycle', f"Joule {b['E_lead_joule_MWh']:,.1f} MWh + from the storage {b['E_lead_drain_MWh']:+,.1f} MWh "
+                                   f"= {b['E_lead_lost_MWh']:,.1f} MWh lost ({b['E_lead_lost_MWh'] / eco['eta_in'] / b['E_in_MWh'] * 100:.1f}% "
+                                   f"of the AC bought, with the supply loss)"),
+    ]
+    rl = _lead_rte(b, opt)
+    if rl:
+        rows.append(('Effect on net RTE', f"{b['RTE'] * 100:.2f}% with the leads; {rl[0] * 100:.2f}% for the same design "
+                                          f"without their losses (in the objective and every RTE in this report)"))
+    doc.kv(rows)
+
+    det = ctx.get('lead_detail')
+    doc.h2('Lead design of the optimum (full lead optimization)')
+    if not det or not det.get('res', {}).get('ok'):
+        doc.para("No feasible lead design: the full lead optimization of this design found no lead within the "
+                 "material temperature limits (or the run's YAML config was not given to the report).", color=WARN)
+        return
+    from . import heater_leads as HL
+    c, r = det['ctx'], det['res']
+    lead, ch, idle = r['lead'], r['charge'], r['idle']
+    rank = det.get('rank', 0)
+    doc.para(f"The leads of design #{rank + 1} optimized in full (differential evolution on each zone's diameter and "
+             f"length, zones left at the {c['li']['min_zone_len'] * 100:.0f} cm minimum tried removed) with the table's "
+             f"settings, at the design's own heater power ({c['P'] / 1e3:,.0f} kW, {c['I'] / 1e3:.2f} kA at {c['V']:g} V), "
+             f"t_top {c['L']:.2f} m, block {c['T_min'] - C2K:.0f} - {c['T_max'] - C2K:.0f} C. Charging: hot end at the "
+             f"heater limit {c['charge']['T_hot'] - C2K:.0f} C, rated current for {c['charge']['hours']:.0f} h; heater off: "
+             f"hot end at the block mean {c['idle']['T_hot'] - C2K:.0f} C for {c['idle']['hours']:.0f} h; Thermax from "
+             f"{c['charge']['T_ins_hot'] - C2K:.0f} C (bottom) to {c['li']['T_ins_cold'] - C2K:.0f} C (top).")
+    zr, x0 = [], 0.0
+    for i, (m, ln, d) in enumerate(zip(lead['mats'], lead['lens'], lead['d'])):
+        if ln <= 0:
+            continue
+        cool = lead['cooled'] and i == len(lead['mats']) - 1
+        Tz = ch['T_zone_max'][i]
+        zr.append([m + (' (water-cooled)' if cool else ''), f"{x0:.2f} - {x0 + ln:.2f}", f"{ln:.2f}", f"{d * 1e3:.0f}",
+                   f"{c['I'] / (math.pi * d * d / 4) / 1e6:.2f}", f"{r['mass_kg'][i]:,.1f}", f"${r['mat_cost'][i]:,.0f}",
+                   f"{Tz - C2K:.0f} / {c['mats'][m]['T_max'] - C2K:.0f}"])
+        x0 += ln
+    doc.table(['zone (hot -> cold)', 'from - to [m]', 'length [m]', 'body dia [mm]', 'A/mm2', 'mass [kg]',
+               'material', 'T max / limit [C]'], zr, widths=[1.4, 0.9, 0.7, 0.8, 0.6, 0.7, 0.8, 1.2])
+    notes = []
+    if lead.get('d_joint'):
+        notes.append("Joints: contact diameter = the smaller body diameter (no necks), widening at no more than "
+                     f"{lead.get('taper_deg', 60):g} deg to the larger body: " + ", ".join(
+                         f"{lead['mats'][j]}/{lead['mats'][j + 1]} {dj * 1e3:.0f} mm" for j, dj in enumerate(lead['d_joint'])) + ".")
+    if ch.get('T_joint'):
+        notes.append("Joint temperatures while charging: " + ", ".join(
+            f"{j['between'][0]}/{j['between'][1]} at {j['x']:.2f} m: {j['T'] - C2K:.0f} C (limit {j['limit'] - C2K:.0f} C)"
+            for j in ch['T_joint']) + ".")
+    if idle.get('open_joint') is not None:
+        notes.append(f"Heater off: the joint at {idle['open_joint']:.2f} m is open ({c['li']['break_gap'] * 1e3:.0f} mm gap, "
+                     "radiation + argon conduction across it); closed for charging.")
+    if ch.get('R_lead'):
+        notes.append(f"Lead resistance {ch['R_lead'] * 1e6:.1f} uOhm: {c['I'] * ch['R_lead']:.2f} V drop "
+                     f"({c['I'] * ch['R_lead'] / c['V'] * 100:.1f}% of the supply voltage) while charging.")
+    doc.bullets(notes)
+    lo = det.get('losses') or HL.losses(c, r)
+    lr = [[ph.replace('charging', 'charging (rated current)'), f"{v['hours']:.0f}", f"{v['joule'] / 1e3:.2f}",
+           f"{v['conduction'] / 1e3:+.2f}", f"{v['lost'] / 1e3:.2f}", f"{v['lost_pct']:.2f}%", f"{v['E_kWh']:,.0f}"]
+          for ph, v in lo['rows'].items()]
+    lr.append([('per cycle', {'bold': True}), '', '', '', '', '', (f"{lo['E_cycle_kWh']:,.0f}", {'bold': True})])
+    doc.table(['phase', 'h / cycle', 'Joule [kW]', 'from storage [kW]', 'lost [kW]', '% of heater power',
+               'kWh / cycle'], lr, widths=[1.6, 0.7, 0.8, 1.0, 0.8, 1.1, 0.9])
+    doc.para(f"Lost = Joule heat + net heat drawn from the storage = heat leaving the system (cooling water, terminal "
+             f"and the share of the heat put into the insulation that reaches the deck). Per cycle "
+             f"{lo['E_cycle_pct']:.2f}% of the heater's charge energy; per lead lifetime ${r['total']:,.0f} = capex "
+             f"${r['capex']:,.0f} + energy ${r['energy_cost']:,.0f}.", size=9)
+    if det.get('err'):
+        tv, e = det['table'], det['err']
+        doc.table(['per lead', 'lead table (optimizer)', 'full optimization', 'table error'], [
+            ['lifetime cost', f"${tv['total']:,.0f}", f"${r['total']:,.0f}", f"{e['total'] * 100:+.1f}%"],
+            ['capex', f"${tv['capex']:,.0f}", f"${r['capex']:,.0f}", f"{e['capex'] * 100:+.1f}%"],
+            ['energy cost', f"${tv['energy_cost']:,.0f}", f"${r['energy_cost']:,.0f}", f"{e['energy_cost'] * 100:+.1f}%"],
+            ['energy lost per cycle', f"{tv['E_cycle_kWh']:,.0f} kWh", f"{lo['E_cycle_kWh']:,.0f} kWh",
+             f"{e['E_cycle_kWh'] * 100:+.1f}%"],
+        ], widths=[1.8, 1.7, 1.7, 1.2])
+    tried = det.get('tried') or {}
+    if len(tried) > 1:
+        doc.para("Zone sets tried (lifetime $ per lead): " + "; ".join(
+            f"{' / '.join(z)} " + (f"${t['total']:,.0f}" if t.get('ok') else 'no solution')
+            + ('' if t.get('feasible', True) else ' (over a T limit)')
+            for z, t in sorted(tried.items(), key=lambda kv: kv[1].get('objective', 1e18))) + ".", size=9)
+    fig = HL.plot_lead_section(c, r, title=f"Heater lead of design #{rank + 1}: {' / '.join(lead['mats'])}, "
+                                           f"${r['total']:,.0f} per lead (lifetime)")
+    doc.figure(_png(fig, out_dir, 'heater_lead_section'),
+               "One heater lead to scale. Left: section through the top insulation, material zones and bar diameters "
+               "(bore gap and Thermax around it). Middle: temperature along the lead while charging and with the "
+               "heater off, the undisturbed Thermax profile and each zone's limit. Right: heat per metre: Joule "
+               "heating while charging and exchange with the insulation (< 0: heat taken from it).",
+               'heater_lead_section')
+
+
+def _lead_detail_matches(det, b):
+    """True if det (heater_leads.lead_for_design result) is for design row b (heater power, t_top, T_max)."""
+    try:
+        c, d = det['ctx'], b['design']
+        return (det['res'].get('ok') and abs(c['P'] / b['heater']['P_heater'] - 1) < 1e-6
+                and abs(c['L'] - d['t_top']) < 1e-9 and abs(c['T_max'] - C2K - d['T_max_C']) < 1e-6)
+    except (KeyError, TypeError, ZeroDivisionError):
+        return False
+
+
+def ensure_lead_detail(ctx, b, rank=0):
+    """The full lead optimization of design row b for the heater section: ctx['lead_detail'] when it is
+    for this design, else run here (heater_leads.lead_for_design with ctx['lead_inputs'] and
+    ctx['lead_table_settings'], ~3-5 min) when the run modelled the leads. -> lead detail dict or None"""
+    from . import optimize as O
+    det = ctx.get('lead_detail')
+    if det and _lead_detail_matches(det, b):
+        return det
+    lt = O.lead_table(ctx['opt'])
+    if lt is None or not b.get('leads') or ctx.get('base_cfg') is None:
+        return None
+    from . import heater_leads as HL
+    print(f"run report: optimizing the heater leads of design #{rank + 1} in full for the heater section "
+          f"(~3-5 min){'; the lead_detail given is for another design' if det else ''}", flush=True)
+    det = HL.lead_for_design(ctx['base_cfg'], ctx['opt'], b, ctx.get('lead_inputs'), ctx.get('lead_table_settings'),
+                             lt=lt, verbose=False)
+    det['rank'] = rank
+    return det
+
+
+def _voltage_study(doc, vs, opt):
+    """Heater supply voltage study (optimizer notebook cell heater_voltage; heater_leads.voltage_case):
+    the optimum re-evaluated at several heater supply voltages."""
+    vs = [c for c in vs if c.get('res')]
+    if not vs:
+        return
+    doc.h2('Heater supply voltage (study of the optimum)')
+    doc.para("The optimum re-evaluated with the heater supply voltage changed and its design variables (geometry, "
+             "flux, T_max, insulation) fixed. The voltage sets the heater current I = P / V and the tube element: at a "
+             "given power its diameter goes as 1 / V and its graphite as 1 / V^2, and a thinner element radiates from "
+             "less area, so it runs hotter and the heater search may need more power or a bigger cavity. The heater "
+             "search, graphite walls, leads (from the run's lead table at the new current), RTE and every capex line "
+             "are redone; each case's leads are also optimized in full. The minimum heater-wall gap is the arcing "
+             "clearance of the voltage (geometry.heater_arc_V_per_in) when geometry.heater_min_gap is None. Not "
+             "modelled: element life at its temperature limit, insulation of the leads and terminals at higher DC "
+             "voltage, and any change in supply cost with voltage.")
+    ref = vs[0]['res']
+
+    def el(r):
+        return r['heater']['element']
+
+    def zones(c):
+        L = c['lead']['lead']
+        return ' / '.join(f"{m[:2]} {ln:.2f} m x {d * 1e3:.0f} mm" for m, ln, d in zip(L['mats'], L['lens'], L['d'])
+                          if ln > 0)
+
+    spec = [
+        ('feasible', lambda r, c: 'yes' if r['feasible'] else 'NO: ' + ', '.join(r.get('violations') or {})),
+        ('net RTE, life average', lambda r, c: f"{r['RTE'] * 100:.2f}%"),
+        ('  without the lead losses', lambda r, c: f"{_lead_rte(r, opt)[0] * 100:.2f}%"),
+        ('initial capex', lambda r, c: f"${r['capex0'] / 1e6:.3f}M"),
+        ('objective (capex + energy lost)', lambda r, c: f"${r['lifetime_cost'] / 1e6:.3f}M"),
+        (f"  vs {vs[0]['V']:.0f} V", lambda r, c: f"{(r['lifetime_cost'] - ref['lifetime_cost']) / 1e3:+,.0f} k$"),
+        ('heater power / charge time', lambda r, c: f"{r['heater']['P_heater'] / 1e3:.0f} kW / {r['t_charge_hr']:.1f} h"),
+        ('heater peak temperature', lambda r, c: f"{r['heater']['T_heater_max'] - C2K:.0f} C"),
+        ('min heater-wall gap / cavity', lambda r, c: f"{r['heater']['min_gap'] * 1e3:.0f} mm / "
+                                                    f"{r['heater_cavity_D'] * 1e3:.0f} mm"),
+        ('min graphite wall between cavities', lambda r, c: f"{r['min_wall'] * 1e3:.0f} mm"),
+        ('element tube OD x wall', lambda r, c: f"{el(r)['D'] * 1e3:.0f} x {el(r)['t'] * 1e3:.1f} mm"),
+        ('element R / current', lambda r, c: f"{el(r)['R'] * 1e3:.1f} mOhm / {el(r)['I'] / 1e3:.2f} kA"),
+        ('element graphite / heater cost', lambda r, c: f"{r['m_heater_kg']:.0f} kg / ${r['heater_cost_each']:,.0f}"),
+        ('grid interconnect', lambda r, c: f"{r['interconnect_kW'] / 1e3:.2f} MW"),
+        ('lead, lead table: lifetime $ / plant MWh lost per cycle',
+         lambda r, c: f"${r['leads']['total']:,.0f} / {r['E_lead_lost_MWh']:.2f}" + (' *' if r['leads'].get('clamped') else '')),
+        ('lead, full optimization: lifetime $ (table error)',
+         lambda r, c: f"${c['lead']['total']:,.0f} ({c['lead_err']['total'] * 100:+.1f}%)"),
+        ('lead zones (full optimization)', lambda r, c: zones(c)),
+    ]
+    rows = []
+    for lab, f in spec:
+        vals = []
+        for c in vs:
+            try:
+                vals.append(f(c['res'], c))
+            except (KeyError, TypeError, IndexError, ZeroDivisionError):
+                vals.append('-')
+        rows.append([lab] + vals)
+    w = max(1.0, 4.6 / len(vs))
+    doc.table(['heater supply voltage'] + [f"{c['V']:.0f} V DC" for c in vs], rows, widths=[2.2] + [w] * len(vs))
+    notes = ["Zones: gr graphite, tu tungsten, co water-cooled copper (length x body diameter)."]
+    if any((c['res'].get('leads') or {}).get('clamped') for c in vs):
+        notes.append("* current outside the lead table's grid: the table's per-ampere values at its edge (the full "
+                     "optimization above gives the error).")
+    doc.para(' '.join(notes), size=9)
 
 
 def _png(fig, out_dir, fname):
@@ -548,7 +848,7 @@ def _liner_trajectory(cy):
     return T[ok], P[ok] / Q[ok], (P * dt)[ok], np.asarray(r['time'][1:], float)[ok] / 3600
 
 
-def _cell_efficiency(doc, b, cy, rows, cfg, out_dir):
+def _cell_efficiency(doc, b, cy, rows, cfg, out_dir, fixed=None):
     import matplotlib.pyplot as plt
     from .properties import panel_efficiency, _PANEL_EFF_COEFFS
     doc.para("Average cell efficiency here = DC out / heat absorbed by the active cells, over the discharge. "
@@ -642,6 +942,12 @@ def _cell_efficiency(doc, b, cy, rows, cfg, out_dir):
                "against average cell efficiency; dotted lines = constant RTE / cell efficiency.", 'rte_vs_cell_efficiency')
 
     # figure 2: cell efficiency vs liner temperature (the fit the model uses)
+    if fixed is not None:
+        doc.h2('Cell efficiency in this run')
+        doc.para(f"This run uses a flat {fixed * 100:.0f}% cell efficiency (optimizer input cells.efficiency, set by "
+                 f"the cost scenario): no dependence on the emitter (liner) temperature or the flux; x (1 - D_cell) "
+                 f"for deposition wear, so the average cell efficiency above is {fixed * 100:.0f}% x (1 - D_cell).")
+        return
     bg = float(cfg['emissivity_tables'][0]['value'][0][0][1])
     _ce = _PANEL_EFF_COEFFS[bg]
     flux_t = float((b or {}).get('design', {}).get('avg_flux', cfg['storage']['avg_flux']))
@@ -853,10 +1159,16 @@ def _model_settings(doc, cfg, src=None):
 def write_report(out_dir, ctx):
     """ctx keys: opt, opt_inputs, base_cfg, rows, best, figs (FigureStore), run (dict of DE
     settings), de (scipy result or None), verified [(screening row, detailed res)], cycle
-    (thermal.cycle result or None), yaml_path, notebook. -> path of report.docx"""
+    (thermal.cycle result or None), yaml_path, notebook; lead_detail (heater_leads.lead_for_design of
+    best[0]; optimized here when missing or for another design and the run modelled the leads, with
+    lead_inputs / lead_table_settings = the notebook's LEAD_INPUTS / LEAD_TABLE), volt_study (list of
+    heater_leads.voltage_case results: heater supply voltage section). -> path of report.docx"""
     from . import optimize as O
     os.makedirs(out_dir, exist_ok=True)
     opt, rows, best = ctx['opt'], ctx.get('rows') or [], ctx.get('best') or []
+    ctx = dict(ctx)
+    if best:            # heater lead design of the optimum: the lead-detail cell's result, else optimized here
+        ctx['lead_detail'] = ensure_lead_detail(ctx, best[0])
     figs = ctx.get('figs')
     run = ctx.get('run') or {}
     de = ctx.get('de')
@@ -883,7 +1195,17 @@ def write_report(out_dir, ctx):
              f"shades, in an insulated steel tank. The optimizer picks the design with the lowest lifetime capex plus "
              f"value of the electricity lost, which pushes toward high round-trip efficiency.")
     doc.h2('Method and assumptions')
-    doc.bullets(ASSUMPTIONS)
+    if (opt.get('leads') or {}).get('table'):
+        doc.bullets([a.replace('roof penetrations (sticks, heaters, shade axles)',
+                               'roof penetrations (sticks, shade axles; the heater leads are modelled)')
+                     for a in ASSUMPTIONS] + [
+            "Heater current leads: every design's leads (graphite / tungsten / water-cooled copper through the top "
+            "insulation, graphite joint opened when the heater is off) are costed from a lead table of optimal "
+            "leads built with the run's costs before the run; their Joule heat, the heat they draw from the storage "
+            "and the heat the copper rejects are in the energy ledger, the RTE and the objective (Heaters and "
+            "current leads section)."])
+    else:
+        doc.bullets(ASSUMPTIONS)
     doc.h2('Run')
     doc.kv([
         ('Search', 'scipy differential evolution (Sobol initialisation, deferred updating, integer shade thickness)'),
@@ -899,15 +1221,24 @@ def write_report(out_dir, ctx):
         _variables(doc, b, opt)
         doc.h1(f"{next(sec)}. Optimal design")
         _design(doc, b)
+        doc.h1(f"{next(sec)}. Heaters and current leads")
+        _heaters(doc, b, ctx, out_dir)
+        if ctx.get('volt_study'):
+            _voltage_study(doc, ctx['volt_study'], opt)
         cy = ctx.get('cycle')
         if cy is not None:
             doc.h1(f"{next(sec)}. Full charge - hold - discharge cycle of the optimum")
             doc.para("Re-run of the optimal design at detailed settings (finer rings, more rays, full timestep), "
                      "sized the same way, clean cells. The optimizer's efficiency is the life average (clean and "
                      "worn cells), so it is a little lower.")
+            if b.get('leads') and getattr(cy, 'lead', None) is None:
+                doc.para("This full-cycle run was made without the heater-lead losses (run before the lead "
+                         "accounting was added to thermal/cycle.py, or without the lead table): its efficiency is "
+                         "higher than the optimizer's for that reason too. Re-run the full-cycle cell.", color=WARN)
             _cycle(doc, cy)
         doc.h1(f"{next(sec)}. Round-trip efficiency vs cell efficiency")
-        _cell_efficiency(doc, b, cy, rows, cy.cfg if cy is not None else ctx['base_cfg'], out_dir)
+        _cell_efficiency(doc, b, cy, rows, cy.cfg if cy is not None else ctx['base_cfg'], out_dir,
+                         fixed=(opt.get('cells') or {}).get('efficiency'))
         if ctx.get('verified'):
             doc.h1(f"{next(sec)}. Detailed-settings check of the top designs")
             _verified(doc, ctx['verified'])

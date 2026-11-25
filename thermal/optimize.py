@@ -77,6 +77,10 @@ OPT_DEFAULTS = {
         'cost_scenario': None,
     },
     'objective': {'rte_min': 0.0},     # optional floor on net RTE (0 = none)
+    # TPV cells: efficiency None = the quadratic fit in the emitter (liner) temperature with the flux derate
+    # (properties.panel_efficiency); a number = that flat efficiency (no temperature or flux dependence).
+    # Set by the cost scenarios: Pilot and FOAK the fit, NOAK a flat 55% (target). Wear applies in both.
+    'cells': {'efficiency': None},
     'costs': {
         'cell_per_cm2': 1.0,      # $/cm2 of cell-covered powerstick face (incl. at replacement)
         'stick_per_m': 100.0,     # $/m of stick length
@@ -130,7 +134,10 @@ OPT_DEFAULTS = {
     'sizing': {'tol_T': 3.0, 'tol_t': 0.01, 'max_iter': 6, 'swing_guess': 500.0},
     'geometry': {
         'ps_liner_gap': 0.02,     # m min clearance powerstick -> liner, each side
-        'heater_min_gap': 0.25,   # m min radial clearance heater -> cavity wall
+        # min radial clearance heater -> cavity wall: None -> the arc clearance of the heater voltage,
+        #   V / heater_arc_V_per_in (7.5 V/in breakdown: 60 V -> 8 in); a number [m] -> that fixed gap
+        'heater_min_gap': None,
+        'heater_arc_V_per_in': 7.5,        # V/in arcing breakdown across the heater gap (argon, hot)
         'H_max': 14.0,            # m block height upper bound
         'min_lower_zone': 0.25,   # m block always this much taller than the stick: a floor below the stick,
                                   #   liner bottom + RGF pad and radiation through the lower zone are always modelled
@@ -347,6 +354,7 @@ def design_cfg(base_cfg, d, opt):
     s['num_ax_segments'] = max(10, int(round(d['H_block'] / f['dz'])))
     s['num_rad_segments'] = f['nrad']
     p['liner_side_len'], p['side_len'] = d['liner_side'], d['ps_side']
+    p['cell_efficiency'] = (opt.get('cells') or {}).get('efficiency')    # None = the quadratic fit
     cfg.setdefault('shade', {})['thickness'] = d['shade_thickness']
     rad = cfg.setdefault('radiation', {})
     rad['vane_rays'] = f['vane_rays']
@@ -434,10 +442,24 @@ def _charge(m, cfg, ar, end_hr, dt_scale, P=None):
                 element={k: (float(v) if isinstance(v, (int, float, np.floating)) else v) for k, v in hm.element.items()})
 
 
+def heater_gap(opt, cfg):
+    """Minimum radial clearance heater -> cavity wall [m]: geometry.heater_min_gap if it is a number,
+    else the arcing clearance of the heater supply voltage, V / heater_arc_V_per_in (7.5 V/in: 60 V ->
+    8 in = 0.203 m), V = YAML heater.voltage."""
+    g = opt['geometry']
+    if g.get('heater_min_gap') is not None:
+        return float(g['heater_min_gap'])
+    V = float(cfg['heater'].get('voltage') or 0.0)
+    if V <= 0:
+        raise ValueError("heater gap from the arc clearance needs heater.voltage (or set geometry.heater_min_gap)")
+    return V / float(g.get('heater_arc_V_per_in', 7.5)) * 0.0254
+
+
 def heater_search(m, cfg, opt):
     """Heater power and cavity for t_charge <= charge_hr. The power cap is YAML
     heater.max_power_per_m x heater length (= block height).
-      - cavity at its minimum (heater_min_gap) meets the target at the cap: the heater
+      - cavity at its minimum (radius = element radius + heater_gap: the arc clearance of the
+        heater voltage, or a fixed geometry.heater_min_gap) meets the target at the cap: the heater
         power is cut to the smallest that still meets it (electrics costed on that);
       - otherwise the cavity grows at the cap: smallest area_ratio that meets it.
     The element is sized for each power tried (thermal.heater.element: a tube from the
@@ -449,9 +471,11 @@ def heater_search(m, cfg, opt):
     tol = opt['fidelity']['heater_ar_tol']
     T_lo = float(m.T_min)
 
+    gap = heater_gap(opt, cfg)
+
     def ar_min(P):                       # cavity at the minimum heater gap, element sized for P
         r = heater_element(h, m.H_block, T_lo, P=P)['r_h']
-        return (r + opt['geometry']['heater_min_gap']) / r
+        return (r + gap) / r
 
     if h['max_temperature'] <= m.T_max + 1.0:
         return dict(ok=False, violation=(m.T_max + 1.0 - h['max_temperature']) / 100.0,
@@ -476,7 +500,7 @@ def heater_search(m, cfg, opt):
                 P_hi, c_hi = P_mid, c_mid
             else:
                 P_lo = P_mid
-        return dict(ok=True, violation=0.0, **c_hi)
+        return dict(ok=True, violation=0.0, min_gap=gap, **c_hi)
     ar_hi, c_hi = ar_lo, c_lo
     for _ in range(8):
         ar_hi *= 1.6
@@ -494,7 +518,7 @@ def heater_search(m, cfg, opt):
             ar_hi, c_hi = ar_mid, c_mid
         else:
             ar_lo = ar_mid
-    return dict(ok=True, violation=0.0, **c_hi)
+    return dict(ok=True, violation=0.0, min_gap=gap, **c_hi)
 
 
 def _run_kw(cfg, opt):
@@ -680,16 +704,9 @@ def evaluate_design(d, base_cfg, opt):
     ld = None
     E_lead_joule = E_lead_drain = E_lead_rej = 0.0
     if lt:
-        el = hs['element']
-        V = float(el.get('V') or cfg['heater'].get('voltage') or 0.0)
-        if V <= 0:
-            raise ValueError("heater leads need the heater voltage (heater.voltage)")
-        n_ld = N * int(opt['leads'].get('n_per_heater', 2))
-        ld = lt(hs['P_heater'] / V, c['t_top'], T_max_C)
-        t_ch_s, t_idle_s = hs['t_charge'] * 3600, max(cycle_hr - hs['t_charge'], 0.0) * 3600
-        E_lead_joule = n_ld * ld['Q_J_charge'] * t_ch_s
-        E_lead_drain = n_ld * (ld['drain_charge'] * t_ch_s + ld['drain_idle'] * t_idle_s)
-        E_lead_rej = n_ld * (max(ld['Q_rej_charge'], 0.0) * t_ch_s + max(ld['Q_rej_idle'], 0.0) * t_idle_s)
+        le = lead_energies(lt, opt, hs['P_heater'], heater_voltage(hs['element'], cfg), c['t_top'], T_max_C,
+                           hs['t_charge'] * 3600, max(cycle_hr - hs['t_charge'], 0.0) * 3600, N)
+        ld, E_lead_joule, E_lead_drain, E_lead_rej = le['ld'], le['E_joule'], le['E_drain'], le['E_rej']
         E_charge_heat += E_lead_drain
     E_in = (E_charge_heat + E_hold_heat + E_lead_joule) / eco['eta_in']
     E_out = N * 0.5 * (E_f_ac + E_d_ac)
@@ -800,6 +817,31 @@ def lead_table(opt):
         with open(path) as fh:
             _LEAD_TABLES[path] = LeadTable(json.load(fh), path)
     return _LEAD_TABLES[path]
+
+
+def heater_voltage(element, cfg):
+    """Heater supply voltage [V]: the element's (tube) or the YAML heater.voltage."""
+    V = float((element or {}).get('V') or cfg['heater'].get('voltage') or 0.0)
+    if V <= 0:
+        raise ValueError("heater leads need the heater voltage (heater.voltage)")
+    return V
+
+
+def lead_energies(lt, opt, P_heater, V, t_top, T_max_C, t_charge_s, t_idle_s, N):
+    """Heater leads of N heaters from the lead table lt, at heater power P_heater [W] and voltage V
+    (current P / V), top insulation t_top [m] and block T_max_C. Joule heat while charging is
+    electricity bought; the heat drained from the storage (charging: net, < 0 when Joule heat flows
+    down into the block; idle = hold + discharge) is put back by the heaters; the heat rejected
+    (cooled copper) loads the heat rejection.
+    -> dict(ld = per-lead table values, n (leads, plant), n_per_heater, I [A], P_J [W lead Joule per
+    heater at full power], E_joule, E_drain, E_rej [J per cycle, plant])."""
+    n_ph = int(opt['leads'].get('n_per_heater', 2))
+    ld = lt(P_heater / V, t_top, T_max_C)
+    n = N * n_ph
+    return dict(ld=ld, n=n, n_per_heater=n_ph, I=P_heater / V, P_J=n_ph * ld['Q_J_charge'],
+                E_joule=n * ld['Q_J_charge'] * t_charge_s,
+                E_drain=n * (ld['drain_charge'] * t_charge_s + ld['drain_idle'] * t_idle_s),
+                E_rej=n * (max(ld['Q_rej_charge'], 0.0) * t_charge_s + max(ld['Q_rej_idle'], 0.0) * t_idle_s))
 
 
 def objective_from(res):

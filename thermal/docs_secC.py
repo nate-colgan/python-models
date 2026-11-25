@@ -150,9 +150,10 @@ def _sec_heater(doc, cfg, opt, cy):
                                                     "[T_min, max_temperature]; the element is resized for every heater "
                                                     "power the charge search tries"],
         ['heater.voltage / wall_ratio / legs', f"{h.get('voltage')} V / {h.get('wall_ratio')} / {h.get('legs', 1)}",
-         'tube: DC supply voltage at full power, wall thickness / OD, strips in series'],
-        ['heater.density', f"{h.get('density', 1850.0)} kg/m3", 'element mass = A_cross x (H_block + t_top) x density '
-                                                               '(costed at heater_graphite_per_kg)'],
+         'tube: DC supply voltage at full power (sets the heater current I = P / V that the leads carry, section 4.8), wall thickness / OD, strips in series'],
+        ['heater.density', f"{h.get('density', 1850.0)} kg/m3", 'element mass = A_cross x H_block x density with the '
+                                                               'heater leads modelled (section 4.8), else x (H_block + '
+                                                               't_top); costed at heater_graphite_per_kg'],
         ['heater.area_ratio', f"{h['area_ratio']}", f"cavity radius {h['area_ratio'] * r_h:.3f} m; the optimizer "
                                                    "searches it (section 9)"],
         ['heater.max_temperature', f"{h['max_temperature']} K", f"surface temperature limit "

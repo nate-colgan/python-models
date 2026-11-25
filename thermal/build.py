@@ -298,6 +298,9 @@ def build_tinless(cfg, overrides=None, verbose=False, geometry_only=False):
                             nominal_cell_flux=avg_flux, liner_material=liner_material,
                             liner_thickness=liner_thickness, liner_tungsten_foil=liner_tungsten_foil)
     sim.cell_eff_factor = 1.0 - D_deg
+    # flat cell efficiency (None = the quadratic fit in the emitter temperature and flux)
+    _fix = cfg['powerstick'].get('cell_efficiency')
+    sim.cell_eff_fixed = None if _fix is None else float(_fix)
 
     # ── Deposition kwargs (as in notebook) ───────────────────────────────────
     r_liner_eff = 2 * liner_side_len / np.pi

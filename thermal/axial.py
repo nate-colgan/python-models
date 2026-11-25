@@ -36,7 +36,7 @@ import re
 
 import numpy as np
 
-from .properties import gr_emis, gr_tcx, ins_tcx, panel_efficiency, LINER_GRAY, liner_eps_out, liner_k
+from .properties import gr_emis, gr_tcx, ins_tcx, cell_efficiency, LINER_GRAY, liner_eps_out, liner_k
 
 SIGMA = 5.67036713e-8          # same constant as tinless.py
 _H, _C, _KB = 6.62607015e-34, 2.99792458e8, 1.380649e-23
@@ -719,7 +719,8 @@ class AxialRadiation:
         sol = self.solve(T_dist[:, 0], control=control and self.shaded)
         Q_cell = sol['Q_cell']
         flux = Q_cell / self.A_cell_cm2_seg
-        eff = panel_efficiency(self.liner.band_gap, sol['T_liner_in'], flux=flux)
+        eff = cell_efficiency(self.liner.band_gap, sol['T_liner_in'], flux=flux,
+                              fixed=getattr(self.sim, 'cell_eff_fixed', None))
         eff = eff * getattr(self.sim, 'cell_eff_factor', 1.0)      # cell degradation (deposition)
         Q_elec = Q_cell * eff
         Q_waste = sol['Q_ps'] - Q_elec
@@ -899,7 +900,8 @@ class VaneHybridRadiation:
         """Drop-in for the TinlessSimulation radiation step (see AxialRadiation.step)."""
         sol = self.solve(T_dist[:, 0], control=control)
         Q_cell = sol['Q_cell']
-        eff = panel_efficiency(self.liner.band_gap, sol['T_liner_in'], flux=Q_cell / self.A_cell_cm2_seg)
+        eff = cell_efficiency(self.liner.band_gap, sol['T_liner_in'], flux=Q_cell / self.A_cell_cm2_seg,
+                              fixed=getattr(self.sim, 'cell_eff_fixed', None))
         eff = eff * getattr(self.sim, 'cell_eff_factor', 1.0)      # cell degradation (deposition)
         Q_elec = Q_cell * eff
         self.sim._step_temps = {

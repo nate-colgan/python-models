@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.optimize import brentq
 import warnings
-from .properties import (gr_emis, gr_tcx, ins_tcx, panel_efficiency,
+from .properties import (gr_emis, gr_tcx, ins_tcx, panel_efficiency, cell_efficiency,
                           w_emis_total, w_emis_spectral_vec,
                           zrc_emis_wavelength_temp, liner_eps_out, liner_k)
 
@@ -391,7 +391,8 @@ class TinlessSimulation:
             T_liner[i] = T_liner_i if ps.liner_bool else 0.0
             T_emit_i   = T_liner_i if ps.liner_bool else T_wall_i
             flux_wcm2  = Q_cell[i] / A_cell_cm2
-            eff_i      = panel_efficiency(band_gap, T_emit_i, flux=flux_wcm2)
+            eff_i      = cell_efficiency(band_gap, T_emit_i, flux=flux_wcm2,
+                                         fixed=getattr(self, 'cell_eff_fixed', None))
             eff_i     *= getattr(self, 'cell_eff_factor', 1.0)   # cell degradation (deposition)
             Q_elec[i]  = Q_cell[i] * eff_i
             Q_waste[i] = Q_rad[i] - Q_elec[i]

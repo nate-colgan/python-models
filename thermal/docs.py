@@ -151,7 +151,7 @@ def sec_optimizer(doc, opt):
         't': (3.6, 3.85, '3. Tank: pass 1 (side/edge share) -> pass 2 sized on AC stick\nN sticks, tank, losses, '
                          'floor, columns, costs', 'proc'),
         'g': (3.6, 2.75, '4. Discharge at 2x life-mean wear (no deposition)', 'proc'),
-        'e': (3.6, 1.75, '5. Energy per cycle, RTE, capex, maintenance,\nenergy lost, constraints', 'proc'),
+        'e': (3.6, 1.75, '5. Energy per cycle (+ heater leads), RTE, capex,\nmaintenance, energy lost, constraints', 'proc'),
         'f': (3.6, 0.6, 'f  (logged with all metrics)', 'out'),
         'x': (6.4, 5.4, 'infeasible:\nf = 1e4 + 1e3 sum(v)', 'out'),
     }, [('d', 's'), ('s', 'c1'), ('c1', 'h', 'ok'), ('h', 'w', 'ok'), ('w', 't', 'ok'), ('t', 'g'), ('g', 'e'),
@@ -178,10 +178,12 @@ def sec_optimizer(doc, opt):
           "during a discharge (heat into the stick + roof/floor losses while the stick is in), averaged over clean "
           "and worn cells; E_sink,ch the roof/floor loss of one cell during its charge; Q_side, Q_edge the plant "
           "side and edge losses at the mid temperature; Q_loss(T_max) the total loss while holding at T_max:")
-    doc.eq(r'E_{AC,in} = \frac{N\,(E_{rel} + E_{sink,ch}) + (Q_{side}+Q_{edge})\,t_{ch} + Q_{loss}(T_{max})\,t_{hold}}'
-           r'{\eta_{in}}')
+    doc.eq(r'E_{AC,in} = \frac{N\,(E_{rel} + E_{sink,ch}) + (Q_{side}+Q_{edge})\,t_{ch} + Q_{loss}(T_{max})\,t_{hold}'
+           r' + E_{drain} + E_J}{\eta_{in}}',
+           where='E_J, E_drain: heater-lead Joule heat while charging and net heat drawn from the storage (section 4.8; '
+                 'zero when no lead table is used).')
     doc.eq(r'E_{AC,out} = N\,\eta_{out}\,(1-\pi_{se})\,\frac{E_{e,clean} + E_{e,worn}}{2},\qquad '
-           r'E_{AC,net} = E_{AC,out} - P_{floor\,fan}\,t_{cycle} - c_{rej}\,N\,\overline{E_{rej}}')
+           r'E_{AC,net} = E_{AC,out} - P_{floor\,fan}\,t_{cycle} - c_{rej}\,(N\,\overline{E_{rej}} + E_{rej,lead})')
     doc.eq(r'\mathrm{RTE_{net}} = E_{AC,net}/E_{AC,in},\qquad t_{hold} = t_{cycle} - t_{ch} - t_{dis}')
     doc.p(f"eta_in = eta_out = {opt['economics']['eta_in']}; pi_se is the fraction of the stick's energy lost to "
           f"side + edge losses (tank.stick_correction); c_rej = {opt['parasitics']['heat_rejection_kWe_per_kWth']} "
@@ -212,11 +214,16 @@ def sec_optimizer(doc, opt):
         'liners: walls 4 s L x liner_wall_per_m2 + floor liner_floor_area_factor s^2 x liner_floor_per_m2;',
         'shades: 8 RGF vanes (l x t x H) x shade_rgf_per_m3 + 8 axles (t_top + axle_extra) x shade_axle_per_m + '
         'drive (one motor + linkage per stick, or one motor per vane);',
-        'heaters, per heater: heater_fixed + element graphite A_cross x (H_block + t_top) x heater.density x '
-        'heater_graphite_per_kg (default the iso-molded graphite price) + charge_electrics_per_kW x heater power;',
+        'heaters, per heater: heater_fixed + element graphite A_cross x H_block (x (H_block + t_top) when no lead '
+        'table is used) x heater.density x heater_graphite_per_kg (default the iso-molded graphite price) + '
+        'charge_electrics_per_kW x (heater power + lead Joule power);',
+        'heater leads (with a lead table): leads per heater x N x (lead material + joints) from the lead table '
+        '(section 4.8);',
         'inverters: inverter_per_kW x max(P_rated, peak plant AC output);',
-        'grid interconnect: interconnect_per_kW x max(all heaters at full power / eta_in, peak AC output);',
-        'heat rejection: heat_rejection_per_kWth x N x peak stick heat rejection.',
+        "grid interconnect: interconnect_per_kW x max(all heaters + their leads' Joule power at full power / "
+        "eta_in, peak AC output);",
+        'heat rejection: heat_rejection_per_kWth x N x peak heat rejection per stick slot (stick discharge peak + '
+        'idle leads, or the leads while charging, whichever is larger).',
     ])
     doc.h3('Cost and economic inputs')
     opt_inputs_table(doc, opt, groups=('costs', 'economics', 'tank_costs'))
@@ -235,7 +242,7 @@ def sec_optimizer(doc, opt):
                "the spread among the best designs; the top designs should be re-checked at detailed settings "
                "(verify cell) and their differences treated as within noise.")
     doc.h3('Fixed (non-optimized) inputs of the optimizer')
-    opt_inputs_table(doc, opt, groups=('plant', 'objective', 'parasitics', 'deposition', 'flux_band_tol', 'sizing',
+    opt_inputs_table(doc, opt, groups=('plant', 'objective', 'cells', 'parasitics', 'deposition', 'flux_band_tol', 'sizing',
                                        'geometry', 'limits', 'fidelity'))
     doc.p(f"Detailed settings used for verification: {O.DETAILED}.")
 
@@ -288,7 +295,10 @@ def sec_cycle(doc, cy, top, opt):
         'insulation, discharge: roof + floor (sink in the discharge run) + side + edge (taken out of the heat the '
         'sticks would otherwise absorb).',
         'stick: heat absorbed on the bare and inactive areas + the cells\' conversion loss.',
-        'parasitics: floor-cooling fans for the whole cycle; dry-cooler fans and pumps on the heat the sticks reject.',
+        'heater leads (with a lead table): Joule heat while charging and the net heat the leads draw from the storage '
+        '(section 4.8).',
+        'parasitics: floor-cooling fans for the whole cycle; dry-cooler fans and pumps on the heat the sticks (and '
+        'the water-cooled leads) reject.',
         'The ledger closes against the AC bought (checked in code).',
     ])
 
@@ -345,7 +355,7 @@ def sec_overview(doc, ctx):
     ])
     doc.h2('1.4 Document map')
     doc.p('2 Inputs; 3 Geometry and discretisation; 4 Component physics (block, radiation, shades, liner, stick and '
-          'cells, heater, deposition); 5 Tank and plant; 6 Transient simulation; 7 Material properties; 8 Plant '
+          'cells, heater, deposition, heater sizing and current leads); 5 Tank and plant; 6 Transient simulation; 7 Material properties; 8 Plant '
           'cycle and example design; 9 Optimizer; 10 Numerical settings; 11 Items to review; Appendix A '
           'alternative model options; Appendix B code map.')
 
@@ -381,6 +391,9 @@ CODE_MAP = [
     ('thermal/sizing.py', 'run_discharge, shade-open sizing of T_min and block volume.'),
     ('thermal/tank.py', 'Plant: hot-zone layout, tank, insulation losses, columns, floor cooling, foundation, costs, '
                         'per-cell roof / floor loss sink.'),
+    ('thermal/heater.py', 'Heater element sizing (tube from power, voltage and resistivity; rod), element mass.'),
+    ('thermal/heater_leads.py', 'Heater current leads: material library, 1-D lead model, lifetime cost, lead '
+                                'optimizer, lead table (build + interpolation), full lead optimization of a design.'),
     ('thermal/cycle.py', 'Full charge-hold-discharge cycle, energy ledger, layout and cycle plots.'),
     ('thermal/optimize.py', 'Design variables, evaluation pipeline, objective, differential evolution, run log.'),
     ('thermal/report.py', 'Run report (Word) of an optimizer run.'),
@@ -389,13 +402,14 @@ CODE_MAP = [
 
 
 def build_docs(path, base_cfg, opt, yaml_path='tinless_model_input.yaml', example_dir=None, cy=None, top=None,
-               verbose=True, run_example_design=True):
+               verbose=True, run_example_design=True, lead_detail=None):
     """Write the model documentation to `path` (.docx). example_dir: optimizer run whose best
     design is re-run as the example (default: the latest run in opt_runs/); pass cy / top to
-    reuse an example already run; run_example_design=False skips it (quick check). -> path"""
+    reuse an example already run; run_example_design=False skips it (quick check). lead_detail:
+    heater_leads.lead_for_design result for the example lead figure (else a lead-table point). -> path"""
     import importlib
-    from . import docs_secA, docs_secB, docs_secC, docs_secD
-    for mod in (docs_secA, docs_secB, docs_secC, docs_secD):
+    from . import docs_secA, docs_secB, docs_secC, docs_secD, docs_secE
+    for mod in (docs_secA, docs_secB, docs_secC, docs_secD, docs_secE):
         importlib.reload(mod)
     say = print if verbose else (lambda *a, **k: None)
     if cy is None and run_example_design:
@@ -403,7 +417,8 @@ def build_docs(path, base_cfg, opt, yaml_path='tinless_model_input.yaml', exampl
         if example_dir:
             say(f"example: best design of {example_dir}, detailed settings ...", flush=True)
             top, cy = run_example(base_cfg, opt, example_dir)
-    ctx = dict(base_cfg=base_cfg, opt=opt, yaml_path=yaml_path, cy=cy, top=top, example_dir=example_dir)
+    ctx = dict(base_cfg=base_cfg, opt=opt, yaml_path=yaml_path, cy=cy, top=top, example_dir=example_dir,
+               lead_detail=lead_detail)
     doc = Doc()
     now = _dt.datetime.now().strftime('%Y-%m-%d')
     doc.title('Tinless thermal battery: system model documentation',
@@ -418,6 +433,7 @@ def build_docs(path, base_cfg, opt, yaml_path='tinless_model_input.yaml', exampl
     numerics += docs_secB.sec_radiation(doc, ctx) or []                # 4.2 - 4.4
     numerics += docs_secA.sec_stick(doc, ctx) or []                    # 4.5
     numerics += docs_secC.sec_heater_deposition(doc, ctx) or []        # 4.6, 4.7
+    numerics += docs_secE.sec_heater_leads(doc, ctx) or []             # 4.8
     say('section 5 ...', flush=True)
     numerics += docs_secD.sec_tank(doc, ctx) or []                     # 5
     say('section 6 ...', flush=True)

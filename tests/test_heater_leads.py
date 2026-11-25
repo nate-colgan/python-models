@@ -159,3 +159,31 @@ def test_profile_joints_match_and_taper_is_limited():
     cone = math.pi / 12 * lt * (0.40 ** 2 + 0.40 * 0.05 + 0.05 ** 2)
     exact = math.pi * 0.40 ** 2 / 4 * (Lg - lt) + cone
     assert abs(HL.zone_volumes(lead)[0] / exact - 1) < 1e-3
+
+
+def test_lead_energies_plant_totals():
+    """optimize.lead_energies (optimizer + cycle ledger): per-lead table powers x leads x phase hours;
+    rejected heat counts only where > 0."""
+    from thermal import optimize as O
+    vals = dict(Q_J_charge=7000.0, drain_charge=-3000.0, drain_idle=450.0, Q_rej_charge=4000.0, Q_rej_idle=-10.0)
+
+    class FakeTable:
+        def __call__(self, I, t_top, T_max_C):
+            self.args = (I, t_top, T_max_C)
+            return dict(vals, I_kA=I / 1e3)
+
+    lt = FakeTable()
+    opt = O.merge(O.OPT_DEFAULTS, {'leads': {'n_per_heater': 2}})
+    t_ch, t_off, N = 30 * 3600.0, 138 * 3600.0, 10
+    le = O.lead_energies(lt, opt, 360e3, 60.0, 1.4, 2250.0, t_ch, t_off, N)
+    assert lt.args == (6000.0, 1.4, 2250.0) and le['n'] == 20 and le['I'] == 6000.0
+    assert le['P_J'] == 2 * 7000.0
+    assert abs(le['E_joule'] - 20 * 7000.0 * t_ch) < 1e-6
+    assert abs(le['E_drain'] - 20 * (-3000.0 * t_ch + 450.0 * t_off)) < 1e-6
+    assert abs(le['E_rej'] - 20 * 4000.0 * t_ch) < 1e-6
+    try:
+        O.heater_voltage({}, {'heater': {}})
+        assert False, 'no voltage must raise'
+    except ValueError:
+        pass
+    assert O.heater_voltage({'V': 80.0}, {'heater': {'voltage': 60.0}}) == 80.0

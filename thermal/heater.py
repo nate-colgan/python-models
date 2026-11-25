@@ -26,8 +26,10 @@ Two element types (heater.type):
             thinner tube with less radiating area, which runs hotter, and the run checks
             it still charges within max_temperature (view factor to the cavity, emissivity).
 
-The element spans the block height and passes up through the top insulation to the
-deck, so its graphite mass is A x (H_block + t_top) x density.
+The element spans the block height. With the heater current leads modelled (optimizer
+leads.table, thermal/heater_leads.py) the leads carry the current I = P / V up through the
+top insulation and the element graphite is A x H_block x density; without them the element
+is taken on up through the top insulation, A x (H_block + t_top) x density.
 """
 import math
 

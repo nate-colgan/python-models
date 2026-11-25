@@ -14,6 +14,9 @@ Uses the YAML design as it stands: no block resizing, no heater-cavity search.
   plant      tank sized as the optimizer does (AC stick, N = ceil(P_rated / P_stick_AC)),
              inverter efficiencies, floor-cooling fans all cycle, heat-rejection fans on
              the heat the sticks reject
+  leads      with opt['leads']['table'] (as the optimizer): heater current leads from the lead
+             table at the heater power as run: Joule heat while charging (bought), net heat
+             drawn from the storage (put back by the heaters), rejected heat on the fans
 
 The ledger splits the AC bought per cycle into where it ends up. Steady cycle: the heaters
 put back the heat the discharge released plus the losses (the stick comes out when the
@@ -164,15 +167,29 @@ def run_cycle(cfg, opt=None, degradation=None, verbose=True, cycle_hr=None, char
     E_ch_side = (L_mid['Q_side'] + L_mid['Q_edge']) * t_ch
     E_hold = {k: L_hot[k] * t_hold for k in ('Q_side', 'Q_edge', 'Q_top', 'Q_bot')}
     E_released = md['E_released']                                            # per stick, discharge
-    heat_in = N * (E_released + ch['E_sink']) + E_ch_side + sum(E_hold.values())   # heaters -> block
-    AC_in = heat_in / ei
+    # heater leads (opt['leads']['table'], as the optimizer): Joule heat while charging is bought; the
+    # net heat they drain from the storage is put back by the heaters; their rejected heat loads the fans
+    lt = O.lead_table(opt)
+    lead = None
+    E_lj = E_ld = E_lr = 0.0
+    if lt:
+        lead = O.lead_energies(lt, opt, hm.heater.max_power, O.heater_voltage(hm.element, c), float(ct['t_top']),
+                               T_max_C, t_ch, max(cycle_hr * 3600 - t_ch, 0.0), N)
+        E_lj, E_ld, E_lr = lead['E_joule'], lead['E_drain'], lead['E_rej']
+    heat_in = (N * (E_released + ch['E_sink']) + E_ch_side + sum(E_hold.values())
+               + E_ld)                                                       # heaters -> block
+    AC_in = (heat_in + E_lj) / ei
     k = 1 - E_side_dis / E_rad                       # side + edge heat comes out of the stick's share
     DC = N * k * E_e
-    E_rej = par['heat_rejection_kWe_per_kWth'] * N * md['E_rej']
+    E_rej = par['heat_rejection_kWe_per_kWth'] * (N * md['E_rej'] + E_lr)
     E_floor = L_hot['P_fan'] * cycle_hr * 3600
     net = DC * eo - E_floor - E_rej
     rows = [
-        ('power electronics', 'heater supply (1 - eta_in)', AC_in - heat_in),
+        ('power electronics', 'heater supply (1 - eta_in)', AC_in - heat_in - E_lj),
+    ] + ([
+        ('heater leads', 'Joule heat (charging)', E_lj),
+        ('heater leads', 'heat drawn from the storage (net)', E_ld),
+    ] if lead else []) + [
         ('insulation: charge', 'roof + floor (cell losses)', N * ch['E_sink']),
         ('insulation: charge', 'side + edges', E_ch_side),
         ('insulation: hold', 'side', E_hold['Q_side']),
@@ -202,7 +219,7 @@ def run_cycle(cfg, opt=None, degradation=None, verbose=True, cycle_hr=None, char
         charge_done=ch['done'], m=m, hm=hm, r_dis=rd, r_chg=rc, stick=st, tank=tank, flux=md,
         T_min_C=T_min_C, T_max_C=T_max_C, hold_loss_W=L_hot['Q_total'], P_floor_fan=L_hot['P_fan'], opt=opt,
         left_in_block=st.E_stick_th - E_released, E_released=E_released, cfg=c, sizing=so, heater_sizing=hs,
-        pitch=pitch, webs=webs,
+        pitch=pitch, webs=webs, lead=lead,
         T_end_vol=st.T_avg[-1] if len(st.T_avg) else np.nan)
     if verbose:
         print(report(res))

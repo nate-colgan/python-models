@@ -919,6 +919,65 @@ def plot_lead_section(ctx, res, title=''):
     return fig
 
 
+def design_lead_context(cfg, opt, row, lead_inputs=None, table=None):
+    """Lead context for one optimizer design row with the lead table's settings (idle disconnect,
+    d_bounds scaled with sqrt(I / I_ref)); the heater current is row's heater power / cfg's
+    heater.voltage. -> (ctx, table settings)"""
+    from . import optimize as O
+    tab = O.merge(TABLE_DEFAULTS, table or {})
+    li = O.merge(LEAD_DEFAULTS, lead_inputs or {})
+    li['design'] = row
+    I_kA = lead_context(cfg, opt, li)['I'] / 1e3
+    s = math.sqrt(I_kA / tab['I_ref_kA'])
+    dlo, dhi = li['d_bounds']
+    li.update(idle_break_after=tab['idle_break_after'], d_bounds=(dlo * s, dhi * s))
+    return lead_context(cfg, opt, li), tab
+
+
+def voltage_case(V, design, base_cfg, opt, fidelity=None, lead_inputs=None, table=None, full_leads=True):
+    """One case of a heater-supply voltage study (process-pool worker): the system design (physical
+    design dict, e.g. best[0]['design']) re-evaluated by optimize.evaluate with heater.voltage = V
+    (heater search, element, leads from the run's lead table, capex, RTE), and with full_leads its
+    leads optimized in full with the table's settings at that design's heater power and current.
+    Picklable result (no lead context; rebuild it with design_lead_context(cfg, opt, res, ...)):
+    dict(V, cfg, res (evaluate dict), lead (best lead), lead_losses, lead_table (interpolated
+    per lead), lead_err (table / full - 1), minutes)."""
+    import time
+    from . import optimize as O
+    t0 = time.perf_counter()
+    cfg = copy.deepcopy(base_cfg)
+    cfg['heater']['voltage'] = float(V)
+    res = O.evaluate(design, cfg, opt, fidelity=fidelity)
+    out = dict(V=float(V), cfg=cfg, res=res, lead=None, lead_losses=None, lead_table=None, lead_err=None)
+    lt = O.lead_table(opt)
+    if full_leads and lt is not None and res.get('feasible'):
+        ld = lead_for_design(cfg, opt, res, lead_inputs, table, lt=lt, verbose=False)
+        out.update(lead=ld['res'], lead_losses=ld['losses'], lead_table=ld['table'], lead_err=ld['err'])
+    out['minutes'] = (time.perf_counter() - t0) / 60
+    return out
+
+
+def lead_for_design(cfg, opt, row, lead_inputs=None, table=None, lt=None, verbose=True):
+    """Full lead optimization for one optimizer design row (e.g. best[0]) with the lead table's
+    settings (zones, water-cooled last zone, idle disconnect, d_bounds scaled with sqrt(I / I_ref)),
+    at the design's own heater power, t_top, T_min and T_max (the table assumed the block mean
+    T_max - swing_guess / 2 for the idle hot end). lt: the run's LeadTable -> also the table's
+    interpolated values at this design and their error against the full optimization.
+    -> dict(ctx, res (best lead), tried {zones: result}, losses, table (interpolated per lead, or
+    None), err {total, energy_cost, capex, E_cycle_kWh: table / full - 1})"""
+    ctx, tab = design_lead_context(cfg, opt, row, lead_inputs, table)
+    best, tried = optimize_with_skips(ctx, tab['cooled'], zones=tab['zones'], verbose=verbose)
+    out = dict(ctx=ctx, res=best, tried=tried, losses=losses(ctx, best) if best.get('ok') else None,
+               table=None, err=None, settings=dict(zones=tab['zones'], cooled=tab['cooled'],
+                                                    idle_break_after=tab['idle_break_after']))
+    if lt is not None and best.get('ok'):
+        tv = lt(ctx['I'], ctx['L'], ctx['T_max'] - C2K)
+        full = dict(total=best['total'], energy_cost=best['energy_cost'], capex=best['capex'],
+                    E_cycle_kWh=out['losses']['E_cycle_kWh'])
+        out.update(table=tv, err={k: tv[k] / v - 1 for k, v in full.items() if v})
+    return out
+
+
 # --------------------------------------------------------------------------
 # lead table: optimal leads precomputed for the system optimizer
 # --------------------------------------------------------------------------

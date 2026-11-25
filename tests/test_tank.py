@@ -321,6 +321,26 @@ def test_cost_scenario_heater_fixed():
         assert O.build_opt({'economics': {'cost_scenario': sc}})['costs']['heater_fixed'] == want
 
 
+def test_cost_scenario_cell_efficiency():
+    """Cell efficiency per scenario (Nate, 2026-11-25): Pilot and FOAK the quadratic fit (None), NOAK a flat
+    55%; design_cfg carries it to powerstick.cell_efficiency, build_tinless to the simulation, and
+    properties.cell_efficiency returns the flat value (or the fit with None)."""
+    from thermal import optimize as O
+    from thermal.build import load_config, build_tinless
+    from thermal.properties import cell_efficiency, panel_efficiency
+    base = load_config(os.path.join(ROOT, 'tinless_model_input.yaml'))
+    d = O.design_from_cfg(base)
+    for sc, want in (('Pilot', None), ('FOAK', None), ('NOAK', 0.55), (None, None)):
+        opt = O.build_opt({'economics': {'cost_scenario': sc}})
+        assert opt['cells']['efficiency'] == want
+        cfg = O.design_cfg(base, d, opt)
+        assert cfg['powerstick']['cell_efficiency'] == want
+        assert build_tinless(cfg, geometry_only=True).sim.cell_eff_fixed == want
+    T = np.array([1900.0, 2300.0])
+    assert np.allclose(cell_efficiency(1.24, T, flux=10.0, fixed=0.55), 0.55)
+    assert np.allclose(cell_efficiency(1.24, T, flux=10.0), panel_efficiency(1.24, T, flux=10.0))
+
+
 def test_cost_scenario_layers_and_none_is_unchanged():
     """No scenario: build_opt = OPT_DEFAULTS + inputs, and tank cost inputs equal to the YAML centrals leave the
     tank costs unchanged. A scenario overrides the inputs it lists and is recorded in _sources."""
@@ -361,3 +381,17 @@ def test_design_vars_from_inputs():
     assert np.allclose(O.encode(d, opt), x)
     with pytest.raises(ValueError):
         O.build_opt({'design_vars': dv[:-1]})
+
+
+def test_heater_gap_from_voltage():
+    """Minimum heater -> cavity gap: arc clearance V / 7.5 V/in when geometry.heater_min_gap is None
+    (60 V -> 8 in, 180 V -> 24 in); a number fixes it."""
+    from thermal import optimize as O
+    opt = O.build_opt({})
+    assert opt['geometry']['heater_min_gap'] is None
+    for V, inch in ((60.0, 8.0), (180.0, 24.0)):
+        assert abs(O.heater_gap(opt, {'heater': {'voltage': V}}) - inch * 0.0254) < 1e-12
+    fixed = O.merge(opt, {'geometry': {'heater_min_gap': 0.25}})
+    assert O.heater_gap(fixed, {'heater': {'voltage': 180.0}}) == 0.25
+    with pytest.raises(ValueError):
+        O.heater_gap(opt, {'heater': {}})

@@ -76,8 +76,10 @@ def _cache(ctx):
 
 
 def _plt():
+    import sys
     import matplotlib
-    matplotlib.use('Agg', force=False)
+    if 'ipykernel' not in sys.modules:     # scripts: no GUI needed. Never in a notebook: switching the
+        matplotlib.use('Agg', force=False)  # kernel to Agg stops every later inline figure from showing
     import matplotlib.pyplot as plt
     return plt
 

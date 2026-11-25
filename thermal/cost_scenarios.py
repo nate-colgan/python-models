@@ -4,7 +4,9 @@ Cost scenarios for the optimizer: Pilot, FOAK, NOAK.
 Source: docs/cost_scenarios_pilot_foak_noak.md (from 20260511_FP-system-cost-model_v6.xlsx,
 the Fourth Power system cost model: Pilot = its 2027 Pilot column, FOAK = 2028 Phase 1,
 NOAK = 2034 Phase 3). Only unit costs and efficiencies are taken from it; the product
-definition (P_rated, duration, cycle) and all physics stay the model's own.
+definition (P_rated, duration, cycle) and all other physics stay the model's own. The TPV cell
+efficiency is part of the scenario (cells.efficiency): Pilot and FOAK use the model's quadratic
+fit in the emitter temperature (None), NOAK a flat 55% (the cell-efficiency target).
 
 Select one with OPT_INPUTS['economics']['cost_scenario'] = 'Pilot' | 'FOAK' | 'NOAK'
 (case-insensitive; None = the inputs cell as written). The scenario is an override layer
@@ -13,7 +15,7 @@ sets is listed below; anything it does not set keeps the inputs-cell value (line
 bare cleaning, elec_price, cycles, lifetime, the other tank rates, ...).
 
 Each entry has the same nesting as the optimizer inputs (see thermal.optimize.OPT_DEFAULTS):
-economics, costs, parasitics and tank_costs (central values
+economics, costs, parasitics, cells and tank_costs (central values
 of the YAML tank.costs rates, applied to every design by optimize.design_cfg).
 """
 
@@ -33,6 +35,7 @@ SCENARIOS = {
             'heater_fixed': 7500.0,
         },
         'parasitics': {'heat_rejection_kWe_per_kWth': 0.05},
+        'cells': {'efficiency': None},     # quadratic fit (emitter temperature + flux)
         'tank_costs': {'storage_graphite_per_kg': 1.50, 'steel_per_t': 5030.0, 'deck_per_t': 5030.0,
                        'structural_steel_per_kg': 5.03},
     },
@@ -46,6 +49,7 @@ SCENARIOS = {
             'heater_fixed': 6000.0,
         },
         'parasitics': {'heat_rejection_kWe_per_kWth': 0.05},
+        'cells': {'efficiency': None},     # quadratic fit (emitter temperature + flux)
         'tank_costs': {'storage_graphite_per_kg': 0.75, 'steel_per_t': 5030.0, 'deck_per_t': 5030.0,
                        'structural_steel_per_kg': 5.03},
     },
@@ -59,6 +63,7 @@ SCENARIOS = {
             'heater_fixed': 4500.0,
         },
         'parasitics': {'heat_rejection_kWe_per_kWth': 0.05},
+        'cells': {'efficiency': 0.55},     # flat 55% (cell-efficiency target), no T / flux dependence
         'tank_costs': {'storage_graphite_per_kg': 0.50, 'steel_per_t': 5030.0, 'deck_per_t': 5030.0,
                        'structural_steel_per_kg': 5.03},
     },
@@ -66,10 +71,11 @@ SCENARIOS = {
 
 # what a scenario changes, for the notes in the run report
 NOTES = {
-    'pilot': "Pilot (2027): eta_in / eta_out 0.95; cells $36.5/cm2 all-in module cost (cells push the optimum "
+    'pilot': "Pilot (2027): eta_in / eta_out 0.95; cell efficiency the quadratic fit; cells $36.5/cm2 all-in module cost (cells push the optimum "
              "toward high flux: consider raising the avg_flux bound).",
-    'foak': "FOAK (2028 Phase 1). Storage 'graphite' at $0.75/kg is baked anode-type carbon: a different "
+    'foak': "FOAK (2028 Phase 1): cell efficiency the quadratic fit. Storage 'graphite' at $0.75/kg is baked anode-type carbon: a different "
             "material (density, conductivity, purity), priced here only.",
-    'noak': "NOAK (2034 Phase 3). Storage 'graphite' at $0.50/kg is baked anode-type carbon: a different "
+    'noak': "NOAK (2034 Phase 3): flat 55% cell efficiency (target; no emitter-temperature or flux "
+            "dependence). Storage 'graphite' at $0.50/kg is baked anode-type carbon: a different "
             "material (density, conductivity, purity), priced here only.",
 }
