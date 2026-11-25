@@ -563,6 +563,7 @@ def evaluate_design(d, base_cfg, opt):
     """Full evaluation of a physical design -> metrics dict (capex_total, RTE, violations, ...)."""
     opt = apply_scenario(opt)                  # no-op when build_opt already applied it
     eco, cost, dep, par = opt['economics'], opt['costs'], opt['deposition'], opt['parasitics']
+    lt = lead_table(opt)                       # heater lead table (None: leads not modelled)
     cfg = design_cfg(base_cfg, d, opt)
     out = dict(design=d)
     viol = {}
@@ -712,7 +713,6 @@ def evaluate_design(d, base_cfg, opt):
     stick_cost = cell_cost + cost['stick_per_m'] * m.L + cost['stick_fixed']
     ls = liner_shade_costs(m, cfg['tank']['t_top'], cost)
     P_heat_kW = hs['P_heater'] / 1e3
-    lt = lead_table(opt)
     # element graphite: block height only when the leads are modelled (they replace the length
     # through the roof insulation); else the element runs on through the top insulation
     m_heater = element_mass(hs['element'], hz.H_block + (0.0 if lt else c['t_top']))   # kg
