@@ -235,12 +235,39 @@ def sec_optimizer(doc, opt):
           "for the shade thickness (integrality), no polishing, the YAML design as one initial member (x0). Population "
           "= popsize x " + str(len(O.design_vars(opt))) + " variables; stop after maxiter generations or when the population's objective spread "
           "std(f) <= tol x |mean(f)| (tol = 1e-3). Designs are evaluated in a process pool (one thread per worker).")
-    doc.p("Typical settings in the notebook: WORKERS 20, POPSIZE 10 (90 designs per generation), MAXITER 25, SEED 0; "
-          "one design takes about 1-2 min on one core (screening settings), so a run is roughly 2-4 hours.")
-    doc.review("Screening fidelity (0.5 m rings, 2^12 vane rays, 2x timestep, 3% heater-cavity tolerance, 3 K / 1% "
-               "sizing tolerances) gives numerical noise of a few tenths of a percent in the objective, comparable to "
-               "the spread among the best designs; the top designs should be re-checked at detailed settings "
-               "(verify cell) and their differences treated as within noise.")
+    doc.p("Typical settings in the notebook: WORKERS 20, POPSIZE 10 (100 designs per generation), MAXITER 25, SEED 0.")
+    doc.p("Run time (2026-11-25 speed-ups; one screening evaluation of the p87 pilot optimum on one core: 54 s before, "
+          "19 s after with one layout pattern, 21-29 s with all four):")
+    doc.bl([
+        "Screening fidelity from a sensitivity study (8 designs of the p87 pilot run, one setting at a time, against "
+        f"the detailed settings): ring height {opt['fidelity']['dz']:g} m, {opt['fidelity']['vane_rays']} vane rays and a "
+        f"radiation Newton tolerance of {opt['fidelity'].get('newton_tol', 1e-9):g} x max sigma T_w^4: capex + energy "
+        "within 0.6 % mean / 1.4 % max of detailed, RTE within 0.1 points, 0.44x the time of 0.5 m / 4096 rays / "
+        "1e-9. Longer time steps (x3, x4) were rejected: under 20 % faster, and the stick count changed on 3 of 8 "
+        "designs.",
+        "View factors: the three vane enclosures are traced once per design (in-memory cache by geometry): the "
+        "sizing loop rebuilds the same cavity for every discharge.",
+        "Vane positions: each step solves the 10 deg anchor and then only the anchor that brackets the setpoint "
+        "(closed or open): two Newton solves instead of three, the same blend.",
+        "Layouts: with layout.pattern = 'all' (or a list) the sizing, deposition and worn-cell discharge are shared and "
+        "only the heater search, plant, energy and capex run per pattern; the design is scored by its best pattern and "
+        "every pattern's result is logged (optimize.layout_bests).",
+        "Warm start (sizing.warm_start): the shade-open sizing starts from the swing and volume factor of the nearest "
+        f"design already sized in the run (within {opt['sizing'].get('warm_dist', 0.25):g} in normalised design "
+        "variables) or in the seed runs; typically one sizing discharge fewer.",
+        "Seeding (run_de seed_rows): up to 30 % of the first population are the best feasible designs of earlier "
+        "runs, encoded with this run's bounds; the rest a Sobol sample.",
+        "The roof / floor sink table of a plant (TankResult.cell_sink) is built only on first use, and the heater "
+        "search builds its provisional sink once instead of for every charge run.",
+    ])
+    doc.review(f"Screening fidelity ({opt['fidelity']['dz']:g} m rings, {opt['fidelity']['vane_rays']} vane rays, "
+               f"{opt['fidelity']['dt_scale']:g}x timestep, {opt['fidelity']['heater_ar_tol']:g} heater-cavity tolerance, "
+               f"{opt['sizing']['tol_T']:g} K / {opt['sizing']['tol_t'] * 100:g}% sizing tolerances) gives numerical noise of "
+               "about 0.5 % in capex + energy, comparable to the spread among the best designs. Small plants are "
+               "sensitive near a stick-count boundary: a ~1.5 % change in stick power can move N_req across it and, with "
+               "the feasible counts below 20 sticks, jump the plant by a whole layout step (7 -> 10 sticks for honeycomb, "
+               "+44 % in the study); cell replacements jump the objective by whole replacements in the same way. "
+               "The top designs must be re-checked at detailed settings (verify cell).")
     doc.h3('Fixed (non-optimized) inputs of the optimizer')
     opt_inputs_table(doc, opt, groups=('plant', 'objective', 'cells', 'parasitics', 'deposition', 'flux_band_tol', 'sizing',
                                        'geometry', 'limits', 'fidelity'))
@@ -389,6 +416,9 @@ CODE_MAP = [
     ('thermal/properties.py', 'Material properties (graphite, storage, insulation, emissivities, cell efficiency).'),
     ('thermal/deposition.py', 'Carbon deposition on the cells (vapour transport across the liner gap).'),
     ('thermal/sizing.py', 'run_discharge, shade-open sizing of T_min and block volume.'),
+    ('thermal/layout.py', 'Stick / heater layout patterns (checkerboard, hex6, honeycomb, hex3): feasible (Tier A) '
+                          'stick counts below 20 (layout_tier_a.json), round clusters above, heater counts, spacing, '
+                          'graphite walls, hot-zone footprint.'),
     ('thermal/tank.py', 'Plant: hot-zone layout, tank, insulation losses, columns, floor cooling, foundation, costs, '
                         'per-cell roof / floor loss sink.'),
     ('thermal/heater.py', 'Heater element sizing (tube from power, voltage and resistivity; rod), element mass.'),

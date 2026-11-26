@@ -1,7 +1,7 @@
 """System-scale steel tank model (steel_tank_system_brief.md).
 
 Takes per-stick results of the tinless model and builds the full plant around them:
-checkerboard hot zone, API 650-class tank, Thermax insulation, graded graphite ->
+hot zone (stick / heater layout: thermal/layout.py), API 650-class tank, Thermax insulation, graded graphite ->
 oxide support columns, forced-air finned floor, foundation, heat losses by path and
 a low / central / high capex breakdown. Closed-form or 1-D integrals only (ms per
 call), all inputs from the YAML `tank:` block (defaults in TANK_DEFAULTS).
@@ -39,6 +39,9 @@ KCAL = 4184.0
 # --------------------------------------------------------------------------
 TANK_DEFAULTS = {
     'P_rated': 25.0e6, 'duration_hr': 50.0,
+    # stick / heater pattern (thermal/layout.py): checkerboard | hex6 | honeycomb | hex3; perimeter heaters
+    # always (every stick fully surrounded), feasible stick counts below 20
+    'layout': 'checkerboard',
     'T_amb': 15.0, 'T_air_design': 40.0,
     't_side': 1.0, 't_top': 1.0, 'L_bot': 2.0,
     'H_wd': None, 'H_deck': 2.0, 'c_shell': 0.05,
@@ -64,7 +67,7 @@ TANK_DEFAULTS = {
                    'cellular_glass_t': 0.20,    # m (PLACEHOLDER)
                    'rho_cellular_glass': 120.0,  # kg/m3
                    'hung_kg_per_pair': 1500.0},  # kg per stick + heater pair hung from the deck: stick,
-                                                 #   heater, liner, shades, drives (PLACEHOLDER)
+                                                 #   heater, liner, shades, drives (PLACEHOLDER); x (N_ps + N_h) / 2
     'shell': {'h_out': 10.0, 'emissivity': 0.9, 'h_headspace': 3.0, 'emis_insulation': 0.9},
     'costs': {
         'steel_per_t': [5000, 7500, 10000], 't_shell': 0.011, 't_bottom': 0.008,
@@ -293,40 +296,56 @@ class HotZone:
     energy_mismatch: float = np.nan   # N E_stick_e / (P_rated * duration) - 1
     A_hcav: float = np.nan
     L_ps: float = 3.0
+    layout: str = 'checkerboard'          # stick / heater pattern (thermal/layout.py)
+    cluster: dict = None                  # layout.plan(): tier, group, unit-spacing stick / heater xy
+    m_graphite_swing: float = np.nan      # kg graphite of the stick cells (the part that swings)
 
     @property
     def A_hot(self):
         return math.pi * self.D_hot ** 2 / 4
 
 
-def cavity_webs(r_in, r_out, r_hcav, rotated=True):
-    """Graphite wall ('web') thickness between neighbouring cavities on the checkerboard
-    (pitch p = sqrt(A_c / 2), A_c = pi r_out^2 + pi r_hcav^2, as size_hot_zone).
-    Stick cavity: square of side S = pi r_in / 2 (r_in is its equivalent radius); heater
-    cavity: circle r_hcav. rotated=True: stick squares turned 45 deg to the grid, corners
-    toward the heaters, faces toward the diagonal stick neighbours.
-    -> (pitch, {'stick-heater', 'stick-stick', 'heater-heater'} [m])"""
-    p = math.sqrt((math.pi * r_out ** 2 + math.pi * r_hcav ** 2) / 2.0)
-    S = math.pi * r_in / 2.0
-    if rotated:
-        sh, ss = p - S / math.sqrt(2.0) - r_hcav, math.sqrt(2.0) * p - S
-    else:
-        sh, ss = p - S / 2.0 - r_hcav, math.sqrt(2.0) * (p - S)
-    return p, {'stick-heater': sh, 'stick-stick': ss, 'heater-heater': math.sqrt(2.0) * p - 2.0 * r_hcav}
+def cavity_webs(r_in, r_out, r_hcav, rotated=True, layout='checkerboard'):
+    """Graphite wall ('web') thickness between neighbouring cavities of the layout (thermal/layout.py):
+    stick-heater spacing d from the plan area per stick (layout.spacing; checkerboard: the pitch
+    p = sqrt(A_c / 2), A_c = pi r_out^2 + pi r_hcav^2). Stick cavity: square of side S = pi r_in / 2
+    (r_in is its equivalent radius); heater cavity: circle r_hcav. Checkerboard: rotated=True turns the
+    stick squares 45 deg to the grid (corners toward the heaters, faces toward the diagonal sticks),
+    False aligns them; hexagonal patterns: the rotation with the thickest thinnest wall.
+    -> (d, {'stick-heater', 'stick-stick', 'heater-heater'} [m])"""
+    from . import layout as LY
+    d = LY.spacing(layout, r_out, r_hcav)
+    rot = (45.0 if rotated else 0.0) if LY.pattern(layout) == 'checkerboard' else None
+    return d, LY.webs(layout, math.pi * r_in / 2.0, r_hcav, d, rot=rot)[1]
 
 
-def size_hot_zone(st, P_rated, duration_hr, A_hcav):
-    N = int(math.ceil(P_rated / st.P_stick))
+def size_hot_zone(st, P_rated, duration_hr, A_hcav, layout='checkerboard'):
+    """Plant layout: N_ps = the smallest feasible stick count >= ceil(P_rated / P_stick) of the
+    pattern (layout.plan: Tier A clusters below 20 sticks, round clusters above), N_h its heaters
+    (every stick fully surrounded). Spacing d from the plan area per stick, hot zone = circle about
+    the cluster through the outermost cavity centres + d / 2 (the tank footprint and its losses).
+    Graphite (cost, load): every cavity's lattice cell, (N_ps + N_h) k d^2 / (1 + rho), less the
+    cavities, so the perimeter heaters carry their graphite and the rest of the circle is insulation;
+    the stick cells' graphite (N_ps x V_block) is the part that swings (E_th, fill -> the roof / floor
+    sink spread over the cells)."""
+    from . import layout as LY
+    lay = LY.plan(layout, int(math.ceil(P_rated / st.P_stick)))
+    N, N_h = lay['N'], lay['N_h']
     E_req = P_rated * duration_hr * 3600.0
-    A_c = math.pi * st.r_out ** 2 + A_hcav
-    p = math.sqrt(A_c / 2.0)
-    D = math.sqrt(4 * N * A_c / math.pi) + p
-    V_g = N * st.V_block
-    fill = V_g / (math.pi * D ** 2 / 4 * st.H_block)
-    return HotZone(N_ps=N, N_h=N, D_hot=D, H_block=st.H_block, m_graphite=V_g * st.rho_g,
-                   E_th=N * st.E_stick_th, A_c=A_c, pitch=p, fill=fill, E_e=N * st.E_stick_e,
-                   E_required=E_req, energy_mismatch=N * st.E_stick_e / E_req - 1.0, A_hcav=A_hcav,
-                   L_ps=st.L_ps)
+    r_hc = math.sqrt(A_hcav / math.pi)
+    d = LY.spacing(layout, st.r_out, r_hc)
+    D = LY.footprint(lay, d)
+    A_hot = math.pi * D ** 2 / 4
+    S = math.pi * st.r_in / 2.0
+    p = LY.PATTERNS[lay['pattern']]
+    a_site = p['k'] * d * d / (1.0 + p['rho'])                 # lattice plan area per cavity site
+    V_all = max((N + N_h) * a_site - N * S ** 2 - N_h * A_hcav, 0.0) * st.H_block
+    V_swing = N * st.V_block
+    return HotZone(N_ps=N, N_h=N_h, D_hot=D, H_block=st.H_block, m_graphite=max(V_all, V_swing) * st.rho_g,
+                   E_th=N * st.E_stick_th, A_c=A_hot / N, pitch=d, fill=V_swing / (A_hot * st.H_block),
+                   E_e=N * st.E_stick_e, E_required=E_req, energy_mismatch=N * st.E_stick_e / E_req - 1.0,
+                   A_hcav=A_hcav, L_ps=st.L_ps, layout=lay['pattern'], cluster=lay,
+                   m_graphite_swing=V_swing * st.rho_g)
 
 
 # --------------------------------------------------------------------------
@@ -660,7 +679,16 @@ class TankResult:
     stick_correction: dict
     warnings: list
     cfg: dict
-    cell_sink: object = None  # CellLossSink of this system (roof + floor loss per cell)
+    _cell_sink: object = None    # CellLossSink of this system (roof + floor loss per cell), built on first use
+    _sink_args: tuple = None
+
+    @property
+    def cell_sink(self):
+        """CellLossSink of this plant (tabulated on first access: 40 roof + bottom solves; the optimizer
+        never needs it, so tank_system does not build it)."""
+        if self._cell_sink is None and self._sink_args is not None:
+            self._cell_sink = CellLossSink.from_system(*self._sink_args)
+        return self._cell_sink
 
     def summary(self):
         """Printable report (multi-line str)."""
@@ -774,7 +802,7 @@ def _system(hz, c, T_max, hist=None, stick=None):
                   # floor plate beyond the tank bottom already in steel_t, + fins
                   + RHO_STEEL * (max(fl_c['plate_t'] - c['costs']['t_bottom'], 0.0)
                                  + fl_c['fin_h'] * fl_c['fin_t'] / fl_c['fin_pitch']))
-    m_hung = fd['hung_kg_per_pair'] * hz.N_ps
+    m_hung = fd['hung_kg_per_pair'] * 0.5 * (hz.N_ps + hz.N_h)
     W = (hz.m_graphite + m_hung + m_floor_m2 * geo.A_tank
          + 1e3 * (w['thermax_t'] + w['column_graphite_t'] + w['oxide_t'] + w['steel_t'] + w['deck_t'])) * G
     p_found = W / geo.A_tank
@@ -797,10 +825,10 @@ def _system(hz, c, T_max, hist=None, stick=None):
                     paths='side + edges' if inc else 'all paths',
                     note='electricity lost ~ eta_block x heat lost')
     T_all = np.concatenate([np.atleast_1d(x) for x in hist[1:]])
-    sink = CellLossSink.from_system(hz, geo, cd, c, float(T_all.min()), max(float(T_all.max()), T_max))
+    sink_args = (hz, geo, cd, c, float(T_all.min()), max(float(T_all.max()), T_max))
     return TankResult(hz=hz, geo=geo, cols=cd, design=design, floor_design=fl, loss_peak=peak, loss_cycle=cyc,
                       cost=cost, loss_fn=loss_fn, foundation_pressure=p_found, economics=econ,
-                      stick_correction=corr, warnings=warn, cfg=c, cell_sink=sink)
+                      stick_correction=corr, warnings=warn, cfg=c, _sink_args=sink_args)
 
 
 def tank_system(stick, cfg_tank=None):
@@ -810,7 +838,7 @@ def tank_system(stick, cfg_tank=None):
     A_h = stick.A_hcav_default
     if A_h is None:
         raise ValueError("heater cavity area unknown: set heater.side_len and heater.area_ratio")
-    hz = size_hot_zone(stick, c['P_rated'], c['duration_hr'], A_h)
+    hz = size_hot_zone(stick, c['P_rated'], c['duration_hr'], A_h, layout=c.get('layout', 'checkerboard'))
     hist = (stick.t, stick.T_avg, stick.T_top, stick.T_bot)
     res = _system(hz, c, stick.T_max, hist, stick)
     res.warnings.insert(0, "cycle-average losses are the mean over the discharge only (no charge/hold cycle defined)")
@@ -894,7 +922,7 @@ def cell_loss_sink(m, cfg_tank=None, eta_e=0.45):
     st = StickInputs(P_stick=c['P_rated'] / N, E_stick_e=eta_e * g['E_th'], E_stick_th=g['E_th'], V_block=g['V'],
                      r_out=g['r_out'], r_in=g['r_in'], H_block=g['H'], L_ps=g['L'], T_min=g['T_lo'] - C2K,
                      T_max=g['T_hi'] - C2K, rho_g=g['rho'], t_discharge=c['duration_hr'] * 3600.0)
-    hz = size_hot_zone(st, c['P_rated'], c['duration_hr'], g['A_h'])
+    hz = size_hot_zone(st, c['P_rated'], c['duration_hr'], g['A_h'], layout=c.get('layout', 'checkerboard'))
     geo = tank_geometry(hz, c)
     cd = _design_bottom(geo, c, st.T_max)[0]
     sink = CellLossSink.from_system(hz, geo, cd, c, st.T_min, st.T_max)

@@ -43,13 +43,14 @@ def load_config(path='tinless_model_input.yaml'):
 
 
 def build_heater(m, area_ratio=None):
-    """Single-heater charge model matching a build_tinless model `m` (checkerboard: one
-    heater per stick, N_h = N_ps). The heater cell holds the same graphite as the stick
-    cell (same volume, height, axial mesh and radial rings) around the heater cavity:
+    """Single-heater charge model matching a build_tinless model `m`. The heater cell holds the
+    graphite the heaters charge, shared over the heaters: the stick cell's volume x
+    heater.cell_graphite_ratio (N_ps / N_h of the layout, thermal/layout.py; 1 when absent, e.g.
+    a large checkerboard), same height, axial mesh and radial rings, around the heater cavity:
 
         r_hcav = heater.area_ratio * r_h,   r_h = the element's radiating radius
                  (thermal.heater.element: tube sized from power and voltage, or rod 2 side_len / pi)
-        r_out  = sqrt(V_block / (pi H_block) + r_hcav^2)
+        r_out  = sqrt(ratio V_block / (pi H_block) + r_hcav^2)
 
     The heater spans the full block height. Block starts at T_min. Outer wall adiabatic
     (symmetry line between heater and stick); roof / floor losses via Q_sink_fn.
@@ -63,7 +64,7 @@ def build_heater(m, area_ratio=None):
     r_in = ar * r_h
     st = m.storage
     H = float(m.H_block)
-    V = np.pi * (st.block.rad_out ** 2 - st.block.rad_in ** 2) * H
+    V = np.pi * (st.block.rad_out ** 2 - st.block.rad_in ** 2) * H * float(h.get('cell_graphite_ratio') or 1.0)
     r_out = float(np.sqrt(V / (np.pi * H) + r_in ** 2))
     nA, nR = st.num_ax_segments, st.num_rad_segments
     block = GraphiteBlock(initial_temp_distribution=np.full((nA, nR), float(m.T_min)),
@@ -329,7 +330,7 @@ def build_tinless(cfg, overrides=None, verbose=False, geometry_only=False):
         if vane_lay is not None:   # rotating vanes: ray-traced closed / 10 deg / open positions
             sim.axial_model = VaneHybridRadiation(
                 sim, g, vane_lay, n_rays=int(rad_cfg.get('vane_rays', 2 ** 14) or 2 ** 14),
-                cache_dir=cache_dir, pad=pad)
+                cache_dir=cache_dir, pad=pad, tol=float(rad_cfg.get('newton_tol') or 1e-9))
             ax = sim.axial_model
             f_shade_min, f_shade_max = 0.0, 1.0                 # f = 1 - w (0 open, 1 closed)
             sim.f_shade_min, sim.f_shade_max = f_shade_min, f_shade_max
@@ -343,7 +344,7 @@ def build_tinless(cfg, overrides=None, verbose=False, geometry_only=False):
                                       method=rad_cfg.get('vf_method', 'analytic') or 'analytic',
                                       n_rays=n_rays, cache_dir=cache_dir)
         if vane_lay is None:
-            sim.axial_model = AxialRadiation(sim, g, vfs, pad=pad)
+            sim.axial_model = AxialRadiation(sim, g, vfs, pad=pad, tol=float(rad_cfg.get('newton_tol') or 1e-9))
             say(f"Axial radiation: {sim.axial_model.N} surfaces, view factors "
                 f"{'/'.join(v.method for v in vfs.values())}")
 

@@ -11,7 +11,9 @@ Uses the YAML design as it stands: no block resizing, no heater-cavity search.
   discharge  the model notebook's main run (sizing.run_discharge: stick in, roof + floor
              losses on, from a uniform T_max until the block average reaches T_min);
              side + edge losses come out of the heat the stick would have absorbed
-  plant      tank sized as the optimizer does (AC stick, N = ceil(P_rated / P_stick_AC)),
+  plant      tank sized as the optimizer does (AC stick, N_ps = the layout's feasible count >=
+             ceil(P_rated / P_stick_AC), N_h heaters of the layout, thermal/layout.py; the heater cell
+             holds N_ps / N_h of a stick cell's graphite),
              inverter efficiencies, floor-cooling fans all cycle, heat-rejection fans on
              the heat the sticks reject
   leads      with opt['leads']['table'] (as the optimizer): heater current leads from the lead
@@ -100,7 +102,13 @@ def run_cycle(cfg, opt=None, degradation=None, verbose=True, cycle_hr=None, char
     E_rad = float(np.sum((rd['Q_rad'][1:] * dt_d)[on]))      # heat into the stick
     E_cell = float(np.sum((rd['Q_cell'][1:] * dt_d)[on]))    # absorbed by the active cells
     E_e = st.E_stick_e                                        # DC
+    # stick / heater counts of the layout: the heater cell holds N_ps / N_h of a stick cell's graphite
+    o_cnt = O.merge(opt, {'charge_hr': charge_hr or opt['charge_hr']})
+    counts = O.plant_counts(st, m, c, o_cnt)
+    c['heater']['cell_graphite_ratio'] = counts[0] / counts[1]
+    m.cfg = c
     # charge (heater cell)
+    say(f"layout {c['tank'].get('layout', 'checkerboard')}: {counts[0]} sticks + {counts[1]} heaters", flush=True)
     say("charge ...", flush=True)
     end_hr = cycle_hr - t_dis / 3600
     if size_heater_cavity:
@@ -122,7 +130,8 @@ def run_cycle(cfg, opt=None, degradation=None, verbose=True, cycle_hr=None, char
     if (hs is None or not hs['ok']) and charge_hr and ch['done'] and ch['t_charge'] < charge_hr * 3600:
         # smallest heater power that still charges within charge_hr
         from .properties import storage_rho, storage_cp
-        E_blk = storage_rho(m.T_max) * storage_cp(m.T_max) * m.V_block * (m.T_max - m.T_min)
+        E_blk = (storage_rho(m.T_max) * storage_cp(m.T_max) * m.V_block * (m.T_max - m.T_min)
+                 * c['heater']['cell_graphite_ratio'])
         P_cap = hm.heater.max_power
         P_lo, P_hi, best = E_blk / (charge_hr * 3600), P_cap, (hm, rc, ch)
         while P_hi / P_lo > 1 + P_tol:
@@ -140,7 +149,7 @@ def run_cycle(cfg, opt=None, degradation=None, verbose=True, cycle_hr=None, char
             f"{ch['t_charge']/3600:.1f} h, more than charge_hr = {charge_hr:g} h")
     t_ch = ch['t_charge']
     st = dataclasses.replace(st, A_hcav_default=np.pi * hm.r_in ** 2)    # heater cavity as run -> tank layout
-    pitch, webs = tk.cavity_webs(m.r_in, m.r_out, hm.r_in, rotated=True)
+    pitch, webs = tk.cavity_webs(m.r_in, m.r_out, hm.r_in, rotated=True, layout=c['tank'].get('layout', 'checkerboard'))
     if min(webs.values()) < opt['geometry']['min_wall']:
         say(f"WARNING: graphite wall {min(webs.values())*1e3:.0f} mm < {opt['geometry']['min_wall']*1e3:.0f} mm minimum "
             f"({', '.join(f'{k} {v*1e3:.0f}' for k, v in webs.items())} mm)")
@@ -155,7 +164,10 @@ def run_cycle(cfg, opt=None, degradation=None, verbose=True, cycle_hr=None, char
     E_ac1 = E_e * (1 - pf1) * eo
     tank = tk.tank_system(dataclasses.replace(st, P_stick=E_ac1 / t_dis, E_stick_e=E_ac1), c['tank'])
     hz, geo, ct = tank.hz, tank.geo, tank.cfg
-    N = hz.N_ps
+    N, N_h = hz.N_ps, hz.N_h
+    if (N, N_h) != counts:
+        say(f"WARNING: the plant with the heater as run has {N} sticks + {N_h} heaters; the heater cell was "
+            f"sized for {counts[0]} + {counts[1]}")
     E_side_dis = tank.stick_correction['E_loss_per_stick_kWh'] * 3.6e6     # per stick, side + edges
     t_hold = max(cycle_hr * 3600 - t_ch - t_dis, 0.0) if ch['done'] else 0.0
     T_max_C, T_min_C = st.T_max, st.T_min
@@ -174,9 +186,9 @@ def run_cycle(cfg, opt=None, degradation=None, verbose=True, cycle_hr=None, char
     E_lj = E_ld = E_lr = 0.0
     if lt:
         lead = O.lead_energies(lt, opt, hm.heater.max_power, O.heater_voltage(hm.element, c), float(ct['t_top']),
-                               T_max_C, t_ch, max(cycle_hr * 3600 - t_ch, 0.0), N)
+                               T_max_C, t_ch, max(cycle_hr * 3600 - t_ch, 0.0), N_h)
         E_lj, E_ld, E_lr = lead['E_joule'], lead['E_drain'], lead['E_rej']
-    heat_in = (N * (E_released + ch['E_sink']) + E_ch_side + sum(E_hold.values())
+    heat_in = (N * E_released + N_h * ch['E_sink'] + E_ch_side + sum(E_hold.values())
                + E_ld)                                                       # heaters -> block
     AC_in = (heat_in + E_lj) / ei
     k = 1 - E_side_dis / E_rad                       # side + edge heat comes out of the stick's share
@@ -190,7 +202,7 @@ def run_cycle(cfg, opt=None, degradation=None, verbose=True, cycle_hr=None, char
         ('heater leads', 'Joule heat (charging)', E_lj),
         ('heater leads', 'heat drawn from the storage (net)', E_ld),
     ] if lead else []) + [
-        ('insulation: charge', 'roof + floor (cell losses)', N * ch['E_sink']),
+        ('insulation: charge', 'roof + floor (cell losses)', N_h * ch['E_sink']),
         ('insulation: charge', 'side + edges', E_ch_side),
         ('insulation: hold', 'side', E_hold['Q_side']),
         ('insulation: hold', 'edges', E_hold['Q_edge']),
@@ -213,7 +225,8 @@ def run_cycle(cfg, opt=None, degradation=None, verbose=True, cycle_hr=None, char
     RTE = net / AC_in
     eta_cell = E_e / E_cell                          # cell efficiency, DC / absorbed by the active cells
     res = SimpleNamespace(
-        RTE=RTE, RTE_gross=DC * eo / AC_in, AC_in=AC_in, net=net, ledger=rows, groups=groups, N=N,
+        RTE=RTE, RTE_gross=DC * eo / AC_in, AC_in=AC_in, net=net, ledger=rows, groups=groups, N=N, N_h=N_h,
+        layout=hz.layout, cluster=hz.cluster,
         DC=DC, E_cell_abs=N * k * E_cell, eta_cell=eta_cell, RTE_frac_cell=RTE / eta_cell,
         t_charge_hr=t_ch / 3600, t_hold_hr=t_hold / 3600, t_discharge_hr=t_dis / 3600, cycle_hr=cycle_hr,
         charge_done=ch['done'], m=m, hm=hm, r_dis=rd, r_chg=rc, stick=st, tank=tank, flux=md,
@@ -237,7 +250,7 @@ def report(res):
          f"{', searched' if res.heater_sizing is not None and res.heater_sizing['ok'] else ''})",
          f"Grid: pitch {res.pitch:.3f} m, graphite walls " + ', '.join(f"{k} {v*1e3:.0f}" for k, v in res.webs.items())
          + " mm (stick cavities at 45 deg)",
-         f"Plant: {res.N} sticks + {res.N} heaters; block {res.T_min_C:.0f}-{res.T_max_C:.0f} C; cycle "
+         f"Plant: {res.N} sticks + {getattr(res, 'N_h', res.N)} heaters ({getattr(res, 'layout', 'checkerboard')}); block {res.T_min_C:.0f}-{res.T_max_C:.0f} C; cycle "
          f"{res.cycle_hr:.1f} h = charge {res.t_charge_hr:.1f} + hold {res.t_hold_hr:.1f} + discharge "
          f"{res.t_discharge_hr:.1f} h" + ('' if res.charge_done else '  (CHARGE INCOMPLETE)'),
          f"Round trip: {res.RTE*100:.1f}% net ({res.RTE_gross*100:.1f}% before parasitic loads);  "
@@ -281,18 +294,22 @@ def _cut(P, y=0.0):
     return (min(xs), max(xs)) if len(xs) >= 2 else None
 
 
-def plot_layout(res, axes=None, n=4, rot=45.0):
-    """To-scale plan and profile of the hot zone as built: stick and heater cavities on a
-    square checkerboard (pitch p = sqrt(A_c / 2), A_c = pi r_out^2 + heater cavity area, as
-    tank.size_hot_zone) in one continuous graphite matrix. Stick cavity square (side
-    S = pi r_in / 2), turned `rot` deg to the grid with its liner, powerstick and the 8
-    octagonal shade vanes (closed solid, open dashed, full block height); heater cavity
-    round. The analysis cells are overlaid dashed: the discharge model gives a stick the
-    pair's graphite as an annulus out to an adiabatic r_out, the charge model gives the same
-    graphite to the heater. -> (fig, axes)"""
+def plot_layout(res, axes=None, n=4, rot=None, full_max=80):
+    """To-scale plan and profile of the hot zone as built: stick and heater cavities of the layout
+    (thermal/layout.py: checkerboard, hex6, honeycomb or hex3; stick-heater spacing d from the plan
+    area per stick, as tank.size_hot_zone) in one continuous graphite matrix. Small plants
+    (N_ps + N_h <= full_max) are drawn whole, with the hot-zone circle; larger ones as a window about
+    the centre about n spacings wide. Stick cavity square (side S = pi r_in / 2), turned `rot` deg
+    (None: the layout's: 45 deg on the checkerboard, the thickest-wall rotation on the hexagonal
+    patterns) with its liner, powerstick and the 8 octagonal shade vanes (closed solid, open dashed,
+    full block height); heater cavity round. The profile is the vertical section through a central
+    stick and its nearest heater (dotted in the plan). The analysis cells are overlaid dashed: the
+    discharge model gives a stick its graphite as an annulus out to an adiabatic r_out, the charge
+    model gives each heater N_ps / N_h of that. -> (fig, axes)"""
     import matplotlib.pyplot as plt
     from matplotlib.patches import Circle, Rectangle, Polygon, Patch
     from matplotlib.lines import Line2D
+    from . import layout as LY
 
     m, hm = res.m, res.hm
     cfg = m.cfg
@@ -308,14 +325,41 @@ def plot_layout(res, axes=None, n=4, rot=45.0):
     r_hc = float(hm.r_in)
     lb = m.liner_bottom
     t_lb, t_rgf = (float(lb['thickness']), float(lb['rgf_thickness'])) if H > L + 1e-9 else (0.0, 0.0)
-    pitch, webs = tk.cavity_webs(m.r_in, m.r_out, r_hc, rotated=abs(rot - 45.0) < 1e-9)
+    pat = getattr(res, 'layout', None) or cfg.get('tank', {}).get('layout', 'checkerboard')
+    cl = getattr(res, 'cluster', None)
+    N_ps, N_h = res.N, getattr(res, 'N_h', res.N)
+    d = LY.spacing(pat, m.r_out, r_hc)
+    rot, webs = LY.webs(pat, S, r_hc, d, rot=rot)
     col = dict(graphite='#a6a6a6', cavity='white', liner='#c8a165', shade='#e8901c', stick='#3a6fc4',
                heater='#d43c2c', pad='#555555', cell_s='#1f3f8f', cell_h='#8f1f1f')
 
+    # sites (m): the whole cluster for a small plant, else a window of the lattice about the centre
+    full = cl is not None and N_ps + N_h <= full_max
+    if full:
+        St, Ht = np.array(cl['sticks']) * d, np.array(cl['heaters']) * d
+    else:
+        S0, H0, _, _ = LY.lattice(pat, R=n + 3)
+        St, Ht = S0 * d, H0 * d
+    # section: through the stick nearest the centre and its nearest heater; turn everything so it is +x
+    s0 = St[np.argmin(np.hypot(*St.T))]
+    h0 = Ht[np.argmin(np.hypot(*(Ht - s0).T))]
+    phi = np.degrees(np.arctan2(*(h0 - s0)[::-1]))
+    St, Ht = _rot(St - s0, -phi), _rot(Ht - s0, -phi)
+    rot_t = rot - phi
+    if full:
+        c_hz = _rot(-s0[None, :], -phi)[0]                     # hot-zone centre in the turned frame
+        R_hz = 0.5 * res.tank.hz.D_hot
+        lo_x, hi_x, lo_y, hi_y = c_hz[0] - R_hz - 0.3, c_hz[0] + R_hz + 0.3, c_hz[1] - R_hz - 0.3, c_hz[1] + R_hz + 0.3
+    else:
+        half = 0.5 * n * d
+        lo_x, hi_x, lo_y, hi_y = -half, half + d, -half, half
+        keep = lambda P, r: (P[:, 0] > lo_x - r) & (P[:, 0] < hi_x + r) & (P[:, 1] > lo_y - r) & (P[:, 1] < hi_y + r)
+        St, Ht = St[keep(St, S)], Ht[keep(Ht, r_hc)]
+
     # stick-cavity contents as polygons about the stick centre, turned with the cavity
-    shapes = dict(cavity=_square(S, rot), stick=_square(ps, rot))
+    shapes = dict(cavity=_square(S, rot_t), stick=_square(ps, rot_t))
     if liner:
-        shapes.update(liner_o=_square(liner, rot), liner_i=_square(liner - 2 * t_l, rot))
+        shapes.update(liner_o=_square(liner, rot_t), liner_i=_square(liner - 2 * t_l, rot_t))
     vanes, t_vane = None, None
     if m.shade_bool and liner and str(sh.get('model', 'vanes')).lower() == 'vanes':
         from .correlations import vane_layout_for_liner, _vane_boxes, _vane_box_corners
@@ -323,94 +367,93 @@ def plot_layout(res, axes=None, n=4, rot=45.0):
             lay, _ = vane_layout_for_liner(liner, float(sh.get('thickness', 0.05)), float(sh.get('corner_gap', 0.003175)),
                                            float(sh.get('vane_clearance', 0.005)), S=S)
             t_vane = lay['t']
-            vanes = {th: [_rot(np.array(_vane_box_corners(b, lay['t']))[[0, 1, 3, 2]], rot) for b in _vane_boxes(lay, th)]
+            vanes = {th: [_rot(np.array(_vane_box_corners(b, lay['t']))[[0, 1, 3, 2]], rot_t) for b in _vane_boxes(lay, th)]
                      for th in (0.0, 90.0)}
         except ValueError:
             vanes = None
 
-    lo, hi = -0.5 * pitch - (n // 2 - 1) * pitch, (n // 2 + 0.5) * pitch   # n x n squares around (0, 0)
     if axes is None:
-        w = hi - lo
-        wr = [1 / w, 1 / (H + 0.5)]
-        fw = min(17.0, 6.0 * w * sum(wr))
-        fig, axes = plt.subplots(1, 2, figsize=(fw, fw / (w * sum(wr)) + 1.8), gridspec_kw={'width_ratios': wr})
+        w, hgt = hi_x - lo_x, hi_y - lo_y
+        wr = [w / hgt, w / (H + 0.5)]                     # equal heights at a common scale per panel
+        fw = min(17.0, 6.0 * sum(wr))
+        fig, axes = plt.subplots(1, 2, figsize=(fw, fw / sum(wr) + 1.8), gridspec_kw={'width_ratios': wr})
     else:
         fig = axes[0].figure
     ap, ax = axes
-    rng = range(int(np.floor(lo / pitch)) - 1, int(np.ceil(hi / pitch)) + 2)
 
     # ---- plan --------------------------------------------------------------------------
-    ap.add_patch(Rectangle((lo, lo), hi - lo, hi - lo, fc=col['graphite'], ec='none', zorder=0))
-    for i in rng:
-        for j in rng:
-            xy = np.array([i * pitch, j * pitch])
-            if (i + j) % 2 == 0:                               # stick
-                ap.add_patch(Polygon(shapes['cavity'] + xy, fc=col['cavity'], ec='k', lw=.6, zorder=1))
-                if vanes:
-                    for P in vanes[0.0]:
-                        ap.add_patch(Polygon(P + xy, fc=col['shade'], ec='none', zorder=2))
-                    for P in vanes[90.0]:
-                        ap.add_patch(Polygon(P + xy, fc='none', ec=col['shade'], ls='--', lw=.8, zorder=2))
-                if liner:
-                    ap.add_patch(Polygon(shapes['liner_o'] + xy, fc=col['liner'], ec='k', lw=.5, zorder=3))
-                    ap.add_patch(Polygon(shapes['liner_i'] + xy, fc=col['cavity'], ec='none', zorder=3))
-                ap.add_patch(Polygon(shapes['stick'] + xy, fc=col['stick'], ec='k', lw=.5, zorder=4))
-            else:                                              # heater
-                ap.add_patch(Circle(xy, r_hc, fc=col['cavity'], ec='k', lw=.6, zorder=1))
-                ap.add_patch(Circle(xy, hs / 2, fc=col['heater'], ec='k', lw=.5, zorder=4) if tube else
-                             Rectangle(xy - hs / 2, hs, hs, fc=col['heater'], ec='k', lw=.5, zorder=4))
+    if full:
+        ap.add_patch(Circle(c_hz, R_hz, fc=col['graphite'], ec='k', lw=.8, zorder=0))
+    else:
+        ap.add_patch(Rectangle((lo_x, lo_y), hi_x - lo_x, hi_y - lo_y, fc=col['graphite'], ec='none', zorder=0))
+    for xy in St:
+        ap.add_patch(Polygon(shapes['cavity'] + xy, fc=col['cavity'], ec='k', lw=.6, zorder=1))
+        if vanes:
+            for P in vanes[0.0]:
+                ap.add_patch(Polygon(P + xy, fc=col['shade'], ec='none', zorder=2))
+            for P in vanes[90.0]:
+                ap.add_patch(Polygon(P + xy, fc='none', ec=col['shade'], ls='--', lw=.8, zorder=2))
+        if liner:
+            ap.add_patch(Polygon(shapes['liner_o'] + xy, fc=col['liner'], ec='k', lw=.5, zorder=3))
+            ap.add_patch(Polygon(shapes['liner_i'] + xy, fc=col['cavity'], ec='none', zorder=3))
+        ap.add_patch(Polygon(shapes['stick'] + xy, fc=col['stick'], ec='k', lw=.5, zorder=4))
+    for xy in Ht:
+        ap.add_patch(Circle(xy, r_hc, fc=col['cavity'], ec='k', lw=.6, zorder=1))
+        ap.add_patch(Circle(xy, hs / 2, fc=col['heater'], ec='k', lw=.5, zorder=4) if tube else
+                     Rectangle(xy - hs / 2, hs, hs, fc=col['heater'], ec='k', lw=.5, zorder=4))
     ap.add_patch(Circle((0, 0), m.r_out, fc='none', ec=col['cell_s'], ls='--', lw=1.6, zorder=5))
-    ap.add_patch(Circle((pitch, 0), hm.r_out, fc='none', ec=col['cell_h'], ls='--', lw=1.6, zorder=5))
-    ap.plot([lo, hi], [0, 0], c='k', lw=.6, ls=':', zorder=5)
-    ap.set_title(f"Plan: pitch {pitch:.3f} m; min graphite wall {min(webs.values())*1e3:.0f} mm\n"
+    ap.add_patch(Circle((d, 0), hm.r_out, fc='none', ec=col['cell_h'], ls='--', lw=1.6, zorder=5))
+    ap.plot([lo_x, hi_x], [0, 0], c='k', lw=.6, ls=':', zorder=5)
+    ap.set_title(f"Plan ({pat}): stick-heater spacing {d:.3f} m; min graphite wall {min(webs.values())*1e3:.0f} mm\n"
                  + ', '.join(f"{k} {v*1e3:.0f}" for k, v in webs.items()) + " mm (dotted = profile section)", fontsize=10)
 
-    # ---- profile: vertical section along the dotted row (y = 0) ---------------------------
-    ax.add_patch(Rectangle((lo, 0), hi - lo, H, fc=col['graphite'], ec='k', lw=.6, zorder=0))
+    # ---- profile: vertical section along the dotted line (y = 0) ----------------------------
+    ax.add_patch(Rectangle((lo_x, 0), hi_x - lo_x, H, fc=col['graphite'], ec='k', lw=.6, zorder=0))
     z_act = H - L
-    for i in rng:
-        x = i * pitch
-        if (i % 2) == 0:                                       # stick (row j = 0)
-            a, b = _cut(shapes['cavity'])
-            ax.add_patch(Rectangle((x + a, 0), b - a, H, fc=col['cavity'], ec='k', lw=.6, zorder=1))
-            if vanes:                                          # vanes cut by the section, full height
-                for th, kw in ((0.0, dict(fc=col['shade'], ec='none')),
-                               (90.0, dict(fc='none', ec=col['shade'], ls='--', lw=.8))):
-                    for P in vanes[th]:
-                        c_ = _cut(P)
-                        if c_:
-                            ax.add_patch(Rectangle((x + c_[0], 0), c_[1] - c_[0], H, zorder=2, **kw))
-            if liner:
-                (oa, ob), (ia, ib) = _cut(shapes['liner_o']), _cut(shapes['liner_i'])
-                z_lb = z_act - t_lb
-                z_lw = z_lb - t_rgf                            # liner walls run down past the pad (model: H_low)
-                for a, b in ((oa, ia), (ib, ob)):
-                    ax.add_patch(Rectangle((x + a, z_lw), b - a, H - z_lw, fc=col['liner'], ec='k', lw=.4, zorder=3))
-                if t_lb > 0:
-                    ax.add_patch(Rectangle((x + oa, z_lb), ob - oa, t_lb, fc=col['liner'], ec='k', lw=.4, zorder=3))
-                if t_rgf > 0:
-                    ax.add_patch(Rectangle((x + ia, z_lw), ib - ia, t_rgf, fc=col['pad'], ec='k', lw=.4, zorder=3))
-            a, b = _cut(shapes['stick'])
-            ax.add_patch(Rectangle((x + a, z_act), b - a, L, fc=col['stick'], ec='k', lw=.5, zorder=4))
-        else:                                                  # heater
-            ax.add_patch(Rectangle((x - r_hc, 0), 2 * r_hc, H, fc=col['cavity'], ec='k', lw=.6, zorder=1))
-            ax.add_patch(Rectangle((x - hs / 2, 0), hs, H, fc=col['heater'], ec='k', lw=.5, zorder=4))
-    for xc, ro, c in ((0.0, m.r_out, col['cell_s']), (pitch, hm.r_out, col['cell_h'])):
+    on = lambda P: P[np.abs(P[:, 1]) < 1e-6 * max(d, 1.0)]
+    for x, _ in on(St):
+        a, b = _cut(shapes['cavity'])
+        ax.add_patch(Rectangle((x + a, 0), b - a, H, fc=col['cavity'], ec='k', lw=.6, zorder=1))
+        if vanes:                                          # vanes cut by the section, full height
+            for th, kw in ((0.0, dict(fc=col['shade'], ec='none')),
+                           (90.0, dict(fc='none', ec=col['shade'], ls='--', lw=.8))):
+                for P in vanes[th]:
+                    c_ = _cut(P)
+                    if c_:
+                        ax.add_patch(Rectangle((x + c_[0], 0), c_[1] - c_[0], H, zorder=2, **kw))
+        if liner:
+            (oa, ob), (ia, ib) = _cut(shapes['liner_o']), _cut(shapes['liner_i'])
+            z_lb = z_act - t_lb
+            z_lw = z_lb - t_rgf                            # liner walls run down past the pad (model: H_low)
+            for a, b in ((oa, ia), (ib, ob)):
+                ax.add_patch(Rectangle((x + a, z_lw), b - a, H - z_lw, fc=col['liner'], ec='k', lw=.4, zorder=3))
+            if t_lb > 0:
+                ax.add_patch(Rectangle((x + oa, z_lb), ob - oa, t_lb, fc=col['liner'], ec='k', lw=.4, zorder=3))
+            if t_rgf > 0:
+                ax.add_patch(Rectangle((x + ia, z_lw), ib - ia, t_rgf, fc=col['pad'], ec='k', lw=.4, zorder=3))
+        a, b = _cut(shapes['stick'])
+        ax.add_patch(Rectangle((x + a, z_act), b - a, L, fc=col['stick'], ec='k', lw=.5, zorder=4))
+    for x, _ in on(Ht):
+        ax.add_patch(Rectangle((x - r_hc, 0), 2 * r_hc, H, fc=col['cavity'], ec='k', lw=.6, zorder=1))
+        ax.add_patch(Rectangle((x - hs / 2, 0), hs, H, fc=col['heater'], ec='k', lw=.5, zorder=4))
+    for xc, ro, c in ((0.0, m.r_out, col['cell_s']), (d, hm.r_out, col['cell_h'])):
         for s in (-1, 1):
             ax.plot([xc + s * ro] * 2, [0, H], c=c, ls='--', lw=1.4, zorder=5)
-    ax.set_title('Profile: vertical section', fontsize=10)
+    ax.set_title('Profile: vertical section through a stick and its nearest heater', fontsize=10)
     ax.set_ylabel('height [m]')
 
-    for a in (ap, ax):
-        a.set_aspect('equal')
-        a.set_xlim(lo, hi)
-        a.set_xlabel('[m]')
-    ap.set_ylim(lo, hi)
+    ap.set_aspect('equal')
+    ap.set_xlim(lo_x, hi_x)
+    ap.set_ylim(lo_y, hi_y)
+    ax.set_aspect('equal')
+    ax.set_xlim(lo_x, hi_x)
     ax.set_ylim(-0.2, H + 0.3)
+    for a in (ap, ax):
+        a.set_xlabel('[m]')
 
     leg = [Patch(fc=col['graphite'], ec='k', label=f"graphite matrix, block height {H:.2f} m"),
            Patch(fc=col['stick'], ec='k', label=f"powerstick {ps*1e3:.0f} mm square, L {L:.2f} m (top of the block)"),
-           Patch(fc='white', ec='k', label=f"stick cavity {S*1e3:.0f} mm square at {rot:g} deg; heater cavity Ø{2*r_hc*1e3:.0f} mm")]
+           Patch(fc='white', ec='k', label=f"stick cavity {S*1e3:.0f} mm square; heater cavity Ø{2*r_hc*1e3:.0f} mm")]
     if liner:
         leg.append(Patch(fc=col['liner'], ec='k', label=f"liner {liner*1e3:.0f} mm square, {t_l*1e3:.0f} mm wall"
                                                          + (f"; bottom {t_lb*1e3:.0f} mm + RGF pad {t_rgf*1e3:.0f} mm" if t_rgf else '')))
@@ -421,9 +464,10 @@ def plot_layout(res, axes=None, n=4, rot=45.0):
             Line2D([0], [0], c=col['cell_s'], ls='--', label=f"discharge model: stick cell, adiabatic r_out {m.r_out:.3f} m"),
             Line2D([0], [0], c=col['cell_h'], ls='--', label=f"charge model: heater cell, adiabatic r_out {hm.r_out:.3f} m")]
     fig.legend(handles=leg, loc='lower center', ncol=2, fontsize=9, bbox_to_anchor=(0.5, -0.01))
-    fig.suptitle(f"Hot zone to scale: {res.N} sticks + {res.N} heaters in one graphite matrix\n"
-                 f"dashed circles = analysis cells: each gives one stick + heater pair's graphite to one cavity, "
-                 f"adiabatic r_out in place of the grid's symmetry lines", fontsize=10)
+    fig.suptitle(f"Hot zone to scale ({pat}): {N_ps} sticks + {N_h} heaters in one graphite matrix"
+                 + ('' if full else ' (window about the centre)') + "\n"
+                 f"dashed circles = analysis cells: a stick's graphite in one annulus; each heater charges "
+                 f"{N_ps}/{N_h} of that, adiabatic r_out in place of the layout's symmetry lines", fontsize=10)
     fig.tight_layout(rect=(0, 0.13, 1, 0.95))
     return fig, axes
 

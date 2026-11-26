@@ -166,6 +166,7 @@ def vanes():
 
 def test_vane_limits_and_setpoint(vanes):
     ax = vanes.sim.axial_model
+    ax.ALL_ANCHORS = True
     Q_tgt = vanes.sim.nominal_cell_flux * ax.A_cell_cm2
     for Tw in (2600.0, 2100.0, 1900.0, 1700.0):
         s = ax.solve(np.full(ax.n, Tw), control=True)
@@ -178,6 +179,21 @@ def test_vane_limits_and_setpoint(vanes):
             assert s['w'] == 0.0 and abs(Qc - s['Q_cell_min']) < 1e-6 * Qc
         else:
             assert s['w'] == 1.0 and abs(Qc - s['Q_cell_max']) < 1e-6 * Qc
+
+
+def test_two_anchor_solve_matches_three(vanes):
+    """Solving only the two anchors that bracket the setpoint gives the same blend as solving all three."""
+    ax = vanes.sim.axial_model
+    for Tw in (2600.0, 2100.0, 1900.0, 1700.0):
+        T = np.full(ax.n, Tw)
+        ax.ALL_ANCHORS = True
+        a = ax.solve(T, control=True)
+        ax.ALL_ANCHORS = False
+        b = ax.solve(T, control=True)
+        assert abs(a['s'] - b['s']) < 1e-6
+        assert np.allclose(a['Q_block'], b['Q_block'], rtol=1e-6) and np.allclose(a['Q_cell'], b['Q_cell'], rtol=1e-6)
+        assert np.allclose(a['dQ_dTw'], b['dQ_dTw'], rtol=1e-5, atol=1e-6 * np.abs(a['dQ_dTw']).max())
+    ax.ALL_ANCHORS = False                  # the transient test below runs the two-anchor path
 
 
 def test_vane_transient_stable(vanes):

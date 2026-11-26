@@ -53,8 +53,10 @@ def _stick(P=120e3, E=6.0e6 * 3600):
 def test_checkerboard_and_energy_mismatch():
     st = _stick(E=5.5e6 * 3600)          # 209 sticks x 5.5 MWh vs 1.25 GWh -> -8%
     hz = T.size_hot_zone(st, 25e6, 50, A_hcav=2.0)
-    assert hz.N_ps == math.ceil(25e6 / st.P_stick) == hz.N_h
-    assert abs(2 * hz.N_ps * hz.pitch ** 2 / (hz.N_ps * hz.A_c) - 1) < 1e-12
+    # large plant (>= 20 sticks): any count; perimeter heaters on top of one per stick (round cluster)
+    assert hz.N_ps == math.ceil(25e6 / st.P_stick)
+    assert hz.N_ps < hz.N_h < hz.N_ps + 3 * math.sqrt(hz.N_ps) + 2
+    assert abs(2 * hz.pitch ** 2 / (math.pi * st.r_out ** 2 + 2.0) - 1) < 1e-12
     assert abs(hz.energy_mismatch - (hz.N_ps * st.E_stick_e / (25e6 * 50 * 3600) - 1)) < 1e-12
     res = T.tank_system(st, {'columns': {'f_3D': 0.54}})
     assert abs(res.hz.A_hcav - 2.0) < 1e-12

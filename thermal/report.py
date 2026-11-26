@@ -125,6 +125,7 @@ DESC = {
     'fidelity.dt_scale': ('', 1, 'timestep multiplier (screening)'),
     'fidelity.vane_rays': ('', 1, 'rays per surface, vane view factors'),
     'fidelity.heater_ar_tol': ('', 1, 'heater cavity search tolerance'),
+    'fidelity.newton_tol': ('', 1, 'radiation Newton tolerance (x max sigma T_w^4)'),
 }
 COST_GROUPS = ('costs', 'economics', 'tank_costs')        # shown with the cost results
 
@@ -152,8 +153,10 @@ SET_BY_OPTIMIZER = {
 
 ASSUMPTIONS = [
     "Each stick and each heater is analysed as an annulus of graphite with an adiabatic outer radius "
-    "(one stick + heater pair's graphite per cavity); in the plant they sit on a checkerboard in one "
-    "continuous graphite matrix (layout figure). All cells are assumed to run in step.",
+    "(a stick's share of the graphite; each heater charges N_ps / N_h of it); in the plant they sit in one "
+    "continuous graphite matrix in the run's layout pattern (checkerboard, hex6, honeycomb or hex3: "
+    "thermal/layout.py), every stick fully surrounded by heaters, with only the symmetric stick counts below "
+    "20 (layout figure). All cells are assumed to run in step.",
     "Block sizing (shade-open): T_max is a design variable; T_min is the volume-average block temperature at "
     "which the shades are fully open, and the block volume is set so that this happens at the target duration.",
     "Charge: heater power is the smallest that charges in charge_hr with the cavity at its minimum gap (the "
@@ -379,7 +382,7 @@ def _key_results(doc, b, ctx):
         ('Net round-trip efficiency (life average)', f"{b['RTE'] * 100:.1f}%"),
         ('Cost scenario', _scenario_text(ctx['opt'])),
         ('Plant', f"{ctx['opt']['P_rated'] / 1e6:.0f} MW x {ctx['opt']['duration_hr']:.0f} h: {b['N_ps']} powersticks "
-                  f"+ {b['N_ps']} heaters"),
+                  f"+ {b.get('N_h', b['N_ps'])} heaters ({b.get('layout', 'checkerboard')} layout)"),
         ('Block', f"{b['T_min_C']:.0f} - {d['T_max_C']:.0f} C (swing {b['swing']:.0f} C), {d['H_block']:.2f} m tall"),
         ('Powerstick / liner', f"{d['ps_side'] * 1e3:.0f} mm x {d['L']:.2f} m / {d['liner_side'] * 1e3:.0f} mm, "
                                f"flux target {d['avg_flux']:.1f} W/cm2"),
@@ -390,7 +393,7 @@ def _key_results(doc, b, ctx):
     if b.get('leads'):
         rl = _lead_rte(b, ctx['opt'])
         rows.append(('Heater leads (in the RTE above)', f"{b['E_lead_lost_MWh']:,.0f} MWh lost per cycle; "
-                     f"${b['leads']['total'] * b['N_ps'] * int((ctx['opt'].get('leads') or {}).get('n_per_heater', 2)) / 1e6:,.1f}M "
+                     f"${b['leads']['total'] * b.get('N_h', b['N_ps']) * int((ctx['opt'].get('leads') or {}).get('n_per_heater', 2)) / 1e6:,.1f}M "
                      f"lifetime; RTE without them {rl[0] * 100:.1f}%"))
     if cy is not None:
         rows.append(('Full-cycle check (detailed settings, clean cells)', f"net RTE {cy.RTE * 100:.1f}%"
@@ -445,9 +448,10 @@ def _design(doc, b):
         ('Shade', f"{d['shade_thickness'] / INCH:.3f} in thick, octagonal vanes, full block height"),
         ('Block height', f"{d['H_block']:.2f} m"),
         ('Heater cavity', f"{b['heater_cavity_D'] * 1e3:.0f} mm dia"),
-        ('Grid pitch (stick to heater)', f"{b['pitch']:.3f} m"),
+        ('Layout', _layout_text(b)),
+        ('Stick-heater spacing', f"{b['pitch']:.3f} m"),
         ('Graphite walls', ', '.join(f"{k} {v * 1e3:.0f} mm" for k, v in b['webs'].items())),
-        ('Sticks / heaters', f"{b['N_ps']} / {b['N_ps']}"),
+        ('Sticks / heaters', f"{b['N_ps']} / {b.get('N_h', b['N_ps'])}"),
         ('Hot zone diameter', f"{b['D_hot']:.1f} m"),
         ('Tank', f"{b['D_tank']:.1f} m dia x {b['H_tank']:.1f} m tall"),
         ('Insulation side / top / bottom stack', f"{d['t_side']:.2f} m / {d['t_top']:.2f} m / "
@@ -504,7 +508,7 @@ def _cycle(doc, cy):
                   f"{cy.m.H_block:.2f} m (volume factor {float(s.get('volume_factor', 1) or 1):.3f})"),
         ('Heater', f"{cy.hm.heater.max_power / 1e3:,.0f} kW, cavity {2 * cy.hm.r_in * 1e3:.0f} mm, "
                    f"element {_heater_describe(cy.hm.element)}"),
-        ('Sticks', f"{cy.N}"),
+        ('Sticks / heaters', f"{cy.N} / {getattr(cy, 'N_h', cy.N)} ({getattr(cy, 'layout', 'checkerboard')} layout)"),
     ] + ([('Heater leads', f"{cy.lead['n']} leads at {cy.lead['I'] / 1e3:.2f} kA (lead table, heater power as run): "
                            f"Joule {cy.lead['E_joule'] * J:,.1f} MWh + from the storage {cy.lead['E_drain'] * J:+,.1f} MWh "
                            f"per cycle (ledger group 'heater leads')")] if getattr(cy, 'lead', None) else []))
@@ -524,7 +528,7 @@ def _lead_rte(b, opt):
     if not ld:
         return None
     eco = opt['economics']
-    n = b['N_ps'] * int((opt.get('leads') or {}).get('n_per_heater', 2))
+    n = b.get('N_h', b['N_ps']) * int((opt.get('leads') or {}).get('n_per_heater', 2))
     t_ch = b['t_charge_hr'] * 3600
     t_id = max(8760.0 / eco['cycles_per_year'] * 3600 - t_ch, 0.0)
     E_rej = n * (max(ld['Q_rej_charge'], 0.0) * t_ch + max(ld['Q_rej_idle'], 0.0) * t_id) / 3.6e9
@@ -533,23 +537,35 @@ def _lead_rte(b, opt):
     return (b['E_net_MWh'] + fan) / E_in, fan
 
 
+def _layout_text(b):
+    """One-line description of a design's stick / heater layout."""
+    from .layout import PATTERNS
+    pat = b.get('layout', 'checkerboard')
+    tier = b.get('layout_tier')
+    tt = {'A': 'symmetric cluster (feasible count)', 'round': 'round cluster'}.get(tier, '')
+    return (f"{pat}: {PATTERNS.get(pat, {}).get('desc', '')}; {b['N_ps']} sticks + {b.get('N_h', b['N_ps'])} heaters"
+            + (f", {tt}" if tt else '') + (f" ({b['layout_group']})" if b.get('layout_group') else ''))
+
+
 def _heaters(doc, b, ctx, out_dir):
     """Heaters and their current leads: element, sizing, the lead-table costs and losses the
     optimizer used, and (ctx['lead_detail']) the full lead optimization of a top design."""
     opt = ctx['opt']
     hs = b.get('heater', {}) or {}
     el = hs.get('element') or {}
-    N = b['N_ps']
+    N = b.get('N_h', b['N_ps'])                     # heaters
     eco = opt['economics']
     ld = b.get('leads')
-    doc.para("Every stick has one heater in its own round cavity. The optimizer sizes each design's heater for the "
+    doc.para("Every heater sits in its own round cavity; every stick is fully surrounded by heaters (layout pattern "
+             f"{b.get('layout', 'checkerboard')}: {b['N_ps']} sticks, {N} heaters). The optimizer sizes each design's heater for the "
              f"target charge time (charge_hr {opt['charge_hr']:g} h): the smallest power that charges the block in "
              "that time with the cavity at its minimum clearance; the cavity grows only if the power cap is not "
              "enough. The graphite tube element is sized for that power at the supply voltage. Each heater's "
              "current comes up through the top insulation to the deck in two current leads (supply + return).")
     doc.h2('Heater')
     rows = [
-        ('Heaters', f"{N}, one per stick"),
+        ('Heaters', f"{N} for {b['N_ps']} sticks ({b.get('layout', 'checkerboard')} layout; each heater charges "
+                    f"{b.get('heater_cell_graphite_ratio', 1.0):.2f} of a stick cell's graphite)"),
         ('Power each (sized for charge_hr)', f"{hs.get('P_heater', np.nan) / 1e3:,.0f} kW; charge {b['t_charge_hr']:.1f} h"),
         ('Cavity', f"{b['heater_cavity_D'] * 1e3:.0f} mm dia (cavity / element radius {b['heater_area_ratio']:.2f})"
                    + (f"; minimum heater-wall gap {hs['min_gap'] * 1e3:.0f} mm" if hs.get('min_gap') else '')

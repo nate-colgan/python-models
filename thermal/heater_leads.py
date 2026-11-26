@@ -195,7 +195,7 @@ def lead_context(cfg, opt, inputs=None):
         H = d['H_block']
         t_top = d['t_top']
         P = (row.get('heater') or {}).get('P_heater')
-        N = row.get('N_ps')
+        N = row.get('N_h', row.get('N_ps'))           # heaters
         src = 'optimizer design row'
     else:
         T_min = float(st['T_min'])

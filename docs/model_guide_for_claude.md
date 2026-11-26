@@ -141,6 +141,10 @@ popsize 10 (100 designs per generation), 25 generations. A full run is about 330
 - Minimum heater → cavity-wall gap = arcing clearance of the heater voltage, V / 7.5 V/in (Nate, 2026-11-25; `geometry.heater_arc_V_per_in`, `optimize.heater_gap`): 60 V → 8 in = 203 mm (was a fixed 0.25 m). `geometry.heater_min_gap` = a number still fixes it; runs logged before 2026-11-25 used 0.25 m.
 
 **Tank / plant**
+- **Layouts (Nate, 2026-11-25; `thermal/layout.py`, optimizer input `layout.pattern`):** checkerboard (4 heaters around each stick, bulk 1 heater/stick), hex6 (6 around each stick, bulk 2/stick), honeycomb (3 + 3, bulk 1:1), hex3 (3 around each stick, 6 sticks around each heater, bulk 1/2). Perimeter heaters are required: every stick fully surrounded, so N_h != N_ps.
+  - Below 20 sticks only Tier A counts (>= 3 mirror axes, compact, no enclosed empty slot): checkerboard 1, 4, 5, 9, 12, 13, 16; hex6 1, 3, 4, 6, 7, 10, 12, 13, 15, 16, 18, 19; honeycomb 1, 3, 6, 7, 10, 12, 13, 15, 18, 19; hex3 1, 4, 6, 9, 12, 13, 16, 18. N_ps = the smallest >= ceil(P_rated / P_stick). From 20 sticks any count, round cluster. Large plants: compare patterns by running the optimizer once per pattern (run folder suffix `_hex6` etc.).
+  - Heater cell holds N_ps / N_h of a stick cell's graphite (`heater.cell_graphite_ratio`); `optimize.plant_counts` fixes the counts before the heater search. Spacing d from the plan area per stick (k d^2 = pi r_out^2 + rho A_hcav). Graphite = every cavity's lattice cell less cavities (perimeter heaters carry their graphite); hot-zone circle through the outermost cavities + d/2.
+  - Runs logged before 2026-11-25 assumed N_h = N_ps with any stick count (e.g. the p87 pilot optimum's 7 + 7 is not a feasible layout now).
 - Column creep basis: sigma_ref = 2.81 MPa at 2400 °C (1% strain in 30 yr). Column pitch is computed. Columns are rectangular, 230 mm thick.
 - Heat spreading: f_3D = 0.85 for the total column heat (confirmed). The floor hot spot uses f_foot = 1.21 × the 1-D column heat over a 0.36 m² bearing plate.
   - Scaling the spot by f_3D under-predicted it by about 40 K against the v3 FEA.
@@ -298,14 +302,26 @@ Observations worth knowing:
 - Argon cost is ignored. Several costs are placeholders (§4).
 - The deposition convection factor is a fixed ×3.5 (shape-dependent; see §4).
 
-## 9. Deferred work (agreed, not started)
+## 9. Optimizer speed (2026-11-25) and deferred work
 
-Nate deferred these on 2026-11-20; together they would roughly halve optimizer run time and improve accuracy:
+Done 2026-11-25 (Nate): screening fidelity dz 1.0 m / 2048 vane rays / Newton tol 1e-7 (sensitivity study on 8 p87
+designs: capex + energy within 0.6% mean / 1.4% max of DETAILED, RTE 0.1 pts, 0.44x the time); vane view factors
+traced once per design (in-memory cache, `axial._VANE_ENC_CACHE`); two-anchor vane solve per step
+(`VaneHybridRadiation.ALL_ANCHORS = False`; docs and one test set it True); `layout.pattern = 'all'` (or a list)
+evaluates every pattern in one design (sizing / worn-cell run shared; record = best pattern, `by_layout` = all;
+`O.layout_bests(rows)`); sizing warm start from the nearest sized design (`sizing.warm_start`, `warm_dist` 0.25;
+`warm_*.jsonl` in the run folder); DE population seeding from earlier runs (`SEED_RUNS` in `opt_run`,
+`run_de(seed_rows=)`, 30% of the first population); `TankResult.cell_sink` built lazily; one heater-search sink per
+search. One evaluation of the pilot optimum, one core: 54 s -> 19 s (one pattern), 21-29 s (all four).
+Small plants: a ~1.5% change in stick power can cross a stick-count boundary and jump the plant a whole feasible
+layout step (honeycomb 7 -> 10); always verify the top designs at DETAILED.
+
+Still deferred:
 
 1. Interpolate the discharge step that crosses the T_min cutoff. Today that step is dropped from the stick's energy but counted in the discharge time.
 2. Fix the shade-opening lag. `sizing.shade_open_point` pairs the shade fraction with the end-of-step temperature, so the opening is detected about one step late.
-3. Then switch screening to one uniform step of about 3600 s, replacing the three-tier dt_short / medium / long.
-4. Cache the vane view factors per design, in memory. The ray trace is about 40% of a screening discharge, and each design re-traces the same cavity about 4 times.
+3. Then re-test larger / uniform timesteps (x3 / x4 were rejected on 2026-11-25: < 20% faster, stick count changed on 3 of 8 designs).
+4. Asynchronous DE (no generation barrier; the p87 run kept 89% of its workers busy): ~10%.
 
 Other open items: the optimal flow-path layout for the round floor; heater power / charge time as an
 optimizer variable; the door and penetration losses.

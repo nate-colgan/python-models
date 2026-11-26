@@ -57,6 +57,7 @@ def _model(ctx):
         return R
     a = ax.anchors['open']
     R['a'] = a
+    ax.ALL_ANCHORS = True            # the control-window figures and tables show all three anchors
     T_min = float(cfg['storage']['T_min'])
     T_max = T_min + float(cfg['storage']['block_temp_range'])
     R['T_min'], R['T_max'] = T_min, T_max

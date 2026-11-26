@@ -734,6 +734,11 @@ class AxialRadiation:
         return sol['f'], (sol['Q_block'], Q_elec, Q_cell, Q_waste, sol['T_liner_in'])
 
 
+from collections import OrderedDict
+_VANE_ENC_CACHE = OrderedDict()      # vane enclosures by geometry key, most recent last (per process)
+_VANE_ENC_CACHE_MAX = 12             # 3 anchors x a few designs
+
+
 class VaneHybridRadiation:
     """Rotating-vane shade (square cavity, octagon of 8 centre-pivoted vanes),
     represented by three ray-traced vane positions:
@@ -759,7 +764,7 @@ class VaneHybridRadiation:
     THETA_MID = 10.0
     KEYS = ('closed', 'mid', 'open')
 
-    def __init__(self, sim, g, lay, n_rays=2 ** 14, n_bins=2, cache_dir=None, pad=None):
+    def __init__(self, sim, g, lay, n_rays=2 ** 14, n_bins=2, cache_dir=None, pad=None, tol=1e-9):
         from types import SimpleNamespace
         from . import correlations as C
         self.sim, self.g, self.lay = sim, g, lay
@@ -770,7 +775,7 @@ class VaneHybridRadiation:
             enc = self._enclosure(C, lay, theta, n_bins, n_rays, cache_dir)
             vp = SimpleNamespace(C=enc.F[None], A_ring=enc.A, slat=enc.slat, names=enc.names,
                                  idx=enc.idx, pairs=enc.pairs)
-            self.anchors[key] = AxialRadiation(sim, g, {'porous': vp}, pad=pad)
+            self.anchors[key] = AxialRadiation(sim, g, {'porous': vp}, pad=pad, tol=tol)
         ax = self.anchors['open']
         self.pad = ax.pad
         self.liner = ax.liner
@@ -814,19 +819,27 @@ class VaneHybridRadiation:
         import os
         import pickle
         g = self.g
-        path = None
-        if cache_dir:
-            parts = [f"{lay[k]:.6f}" for k in ('A', 'l', 'liner_half', 't', 'gap')] + \
-                    [",".join(f"{x:.6f}" for x in g['edges']), ",".join(f"{x:.6f}" for x in g['edges_act']),
-                     f"{g['z_act0']:.6f}", f"{g['H_low']:.6f}", f"{theta}", str(n_bins), str(n_rays), "vane-v1"]
-            path = os.path.join(cache_dir, "vane_" + hashlib.sha1("|".join(parts).encode()).hexdigest()[:16] + ".pkl")
-            if os.path.exists(path):
-                return pickle.load(open(path, 'rb'))
-        enc = C._vane_enclosure(lay, g['edges'], g['edges_act'], g['z_act0'], g['H_low'], theta,
-                                n_bins, n_rays)
-        if path:
-            os.makedirs(cache_dir, exist_ok=True)
-            pickle.dump(enc, open(path, 'wb'))
+        parts = [f"{lay[k]:.6f}" for k in ('A', 'l', 'liner_half', 't', 'gap')] + \
+                [",".join(f"{x:.6f}" for x in g['edges']), ",".join(f"{x:.6f}" for x in g['edges_act']),
+                 f"{g['z_act0']:.6f}", f"{g['H_low']:.6f}", f"{theta}", str(n_bins), str(n_rays), "vane-v1"]
+        key = hashlib.sha1("|".join(parts).encode()).hexdigest()[:16]
+        # in-memory cache (per process): the sizing loop rebuilds the same cavity several times per design
+        # (the block volume and T_min change, the cavity does not), so it is traced once per design
+        if key in _VANE_ENC_CACHE:
+            _VANE_ENC_CACHE.move_to_end(key)
+            return _VANE_ENC_CACHE[key]
+        path = os.path.join(cache_dir, "vane_" + key + ".pkl") if cache_dir else None
+        if path and os.path.exists(path):
+            enc = pickle.load(open(path, 'rb'))
+        else:
+            enc = C._vane_enclosure(lay, g['edges'], g['edges_act'], g['z_act0'], g['H_low'], theta,
+                                    n_bins, n_rays)
+            if path:
+                os.makedirs(cache_dir, exist_ok=True)
+                pickle.dump(enc, open(path, 'wb'))
+        _VANE_ENC_CACHE[key] = enc
+        while len(_VANE_ENC_CACHE) > _VANE_ENC_CACHE_MAX:
+            _VANE_ENC_CACHE.popitem(last=False)
         return enc
 
     def _liner_from_Q(self, Q_ps):
@@ -841,49 +854,93 @@ class VaneHybridRadiation:
         k = 0 if s <= 1.0 else 1
         return vals[k] + (s - k) * (vals[k + 1] - vals[k])
 
+    # True: solve all three anchors every step (Q_cell_min / Q_cell_max always recorded); False: the 10 deg
+    # anchor first, then only the one that brackets the setpoint (the blend uses two anchors at a time;
+    # the third is not needed) -- 2 Newton solves per step instead of 3, same result
+    ALL_ANCHORS = False
+
+    def _seg_of(self, s):
+        return 0 if s <= 1.0 else 1
+
+    def _bl(self, sols, fn, s):
+        """Blend fn(anchor solution) between the two anchors of the segment that holds s; at an anchor
+        (s = 0, 1, 2) only that anchor is used (the other may not have been solved)."""
+        k = self._seg_of(s)
+        t = s - k
+        if t == 0.0:
+            return fn(sols[k], k)
+        if t == 1.0:
+            return fn(sols[k + 1], k + 1)
+        a, b = fn(sols[k], k), fn(sols[k + 1], k + 1)
+        return a + t * (b - a)
+
+    def _needed(self, s):
+        """Anchors the blend at s uses."""
+        k = self._seg_of(s)
+        t = s - k
+        return [k] if t == 0.0 else [k + 1] if t == 1.0 else [k, k + 1]
+
     def solve(self, T_wall, control=False, s=None):
         """control=True: hold the setpoint if feasible; else s (default 2 = fully open)."""
         from scipy.optimize import brentq
         self.stats['calls'] += 1
-        sols = [self.anchors[k].solve(T_wall, f=1.0) for k in self.KEYS]
-        # liner-ring heat only (the anchors' Q_ps may include liner-bottom -> cells)
-        Qp = [self.anchors[k].A_L * self.liner(so['T_liner_out'])[0] for k, so in zip(self.KEYS, sols)]
-        Qb = [so['Q_block'] for so in sols]
+        sols = [None, None, None]
+
+        def anchor(i):
+            if sols[i] is None:
+                sols[i] = self.anchors[self.KEYS[i]].solve(T_wall, f=1.0)
+            return sols[i]
+        Qp_cache = {}
+
+        def Qp(so, i):          # liner-ring heat only (the anchors' Q_ps may include liner-bottom -> cells)
+            if i not in Qp_cache:
+                Qp_cache[i] = self.anchors[self.KEYS[i]].A_L * self.liner(so['T_liner_out'])[0]
+            return Qp_cache[i]
         pad_keys = ('Q_pad', 'T_LB', 'T_pad_mid', 'T_R', 'Q_cap', 'q_cap', 'Q_LB_cells', 'Q_LB_cells_active',
                     'Q_LB_sides_gross')
         has_pad = self.pad is not None
         inc = has_pad and self.pad.include_cells
-        lbc = (lambda x: self._pw([so['Q_LB_cells_active'] for so in sols], x)) if inc else (lambda x: 0.0)
 
         def qcell_tot(x):
-            return float((self._liner_from_Q(self._pw(Qp, x))[1] * self.A_L).sum()) + lbc(x)
-        Q_lo, Q_hi = float(sols[0]['Q_cell'].sum()), float(sols[2]['Q_cell'].sum())
+            lb = self._bl(sols, lambda so, i: so['Q_LB_cells_active'], x) if inc else 0.0
+            return float((self._liner_from_Q(self._bl(sols, Qp, x))[1] * self.A_L).sum()) + lb
+        if self.ALL_ANCHORS:
+            for i in range(3):
+                anchor(i)
         if control:
             Q_tgt = self.sim.nominal_cell_flux * self.A_cell_cm2
-            if Q_hi <= Q_tgt:
-                s = 2.0
-            elif Q_lo >= Q_tgt:
-                s = 0.0
-            else:
-                s = brentq(lambda x: qcell_tot(x) - Q_tgt, 0.0, 2.0, xtol=1e-9)
+            Q_mid = float(anchor(1)['Q_cell'].sum())
+            if Q_mid >= Q_tgt:                               # setpoint between closed and 10 deg (or closed)
+                if float(anchor(0)['Q_cell'].sum()) >= Q_tgt:
+                    s = 0.0
+                else:
+                    s = brentq(lambda x: qcell_tot(x) - Q_tgt, 0.0, 1.0, xtol=1e-9)
+            else:                                            # between 10 deg and open (or open)
+                if float(anchor(2)['Q_cell'].sum()) <= Q_tgt:
+                    s = 2.0
+                else:
+                    s = brentq(lambda x: qcell_tot(x) - Q_tgt, 1.0, 2.0, xtol=1e-9)
         else:
             s = 2.0 if s is None else float(np.clip(s, 0.0, 2.0))
-        Q_block = self._pw(Qb, s)
-        Q_ps = self._pw(Qp, s)
+        for i in self._needed(s):
+            anchor(i)
+        Q_block = self._bl(sols, lambda so, i: so['Q_block'], s)
+        Q_ps = self._bl(sols, Qp, s)
         T_out, qc, T_in = self._liner_from_Q(Q_ps)
         Q_cell = qc * self.A_L
-        pad_out = {k: self._pw([so[k] for so in sols], s) for k in pad_keys} if has_pad else {}
+        pad_out = {kk: self._bl(sols, lambda so, i, kk=kk: so[kk], s) for kk in pad_keys} if has_pad else {}
         Q_sink = float(Q_ps.sum()) + pad_out.get('Q_pad', 0.0)
         if inc:
             Q_cell = Q_cell.copy(); Q_cell[0] += pad_out['Q_LB_cells_active']
             Q_ps = Q_ps.copy(); Q_ps[0] += pad_out['Q_LB_cells']
+        tot = lambda i: float(sols[i]['Q_cell'].sum()) if sols[i] is not None else np.nan
         out = dict(s=s, w=s / 2.0, f=1.0 - s / 2.0, vane_angle=self.angle_of(s),
                    Q_block=Q_block, Q_ps=Q_ps, Q_cell=Q_cell, Q_sink=Q_sink,
-                   Q_cell_min=Q_lo, Q_cell_max=Q_hi, Q_cell_mid=float(sols[1]['Q_cell'].sum()),
+                   Q_cell_min=tot(0), Q_cell_max=tot(2), Q_cell_mid=tot(1),
                    T_liner_out=T_out, T_liner_in=T_in,
-                   dQ_dTw=self._pw([so['dQ_dTw'] for so in sols], s),
-                   T_vane_out=float(np.mean(self._pw([so['T_shade_out'] for so in sols], s))),
-                   T_vane_in=float(np.mean(self._pw([so['T_shade_in'] for so in sols], s))),
+                   dQ_dTw=self._bl(sols, lambda so, i: so['dQ_dTw'], s),
+                   T_vane_out=float(np.mean(self._bl(sols, lambda so, i: so['T_shade_out'], s))),
+                   T_vane_in=float(np.mean(self._bl(sols, lambda so, i: so['T_shade_in'], s))),
                    balance_err=abs(Q_block.sum() - Q_sink) / max(abs(Q_block.sum()), 1e-30),
                    anchors=tuple(sols), **pad_out)
         self.last = out
@@ -891,10 +948,10 @@ class VaneHybridRadiation:
 
     def vertical_transport(self, sol=None):
         """Net upward radiative transfer across the liner-bottom plane, blended
-        piecewise between the three vane positions like everything else."""
+        piecewise between the two vane positions that bracket s, like everything else."""
         sol = sol or self.last
-        v = [sum(self.anchors[k].vertical_transport(so).values()) for k, so in zip(self.KEYS, sol['anchors'])]
-        return {'cavity': float(self._pw(np.array(v), sol['s']))}
+        v = lambda so, i: sum(self.anchors[self.KEYS[i]].vertical_transport(so).values())
+        return {'cavity': float(self._bl(sol['anchors'], v, sol['s']))}
 
     def step(self, T_dist, control):
         """Drop-in for the TinlessSimulation radiation step (see AxialRadiation.step)."""

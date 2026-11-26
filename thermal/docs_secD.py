@@ -630,27 +630,52 @@ def sec_tank(doc, ctx):
         "Heater cavity area A_hcav = pi r_hc^2 (from the heater element radius and area_ratio, or the optimizer's heater "
         "search). E_sink is the roof + floor sink energy removed during the run (section 5.7).",
     ])
-    doc.p("Sizing (size_hot_zone, tank.py:300-311):")
-    doc.eq(r'N_{ps} = \left\lceil P_{rated}/P_{stick} \right\rceil,\qquad N_h = N_{ps}')
-    doc.eq(r'A_c = \pi r_{out}^2 + A_{hcav},\qquad p = \sqrt{A_c/2},\qquad D_{hot} = \sqrt{4 N_{ps} A_c/\pi} + p',
-           where='A_c: plan area of one stick + heater pair; p: checkerboard pitch (stick-heater centre distance); '
-                 'the + p adds a half-pitch ring around the array.')
-    doc.eq(r'm_g = N_{ps}\,\pi (r_{out}^2 - r_{in}^2) H \rho_g,\qquad \phi_{fill} = '
-           r'\frac{N_{ps}\,\pi (r_{out}^2 - r_{in}^2) H}{\pi D_{hot}^2 H / 4}')
+    from . import layout as LY
+    doc.p("Layout (thermal/layout.py, tank.layout; the optimizer input layout.pattern). Sticks and heaters sit in one "
+          "graphite matrix in one of four patterns, and every stick must have its full ring of heater neighbours "
+          "(perimeter heaters), so in general N_h != N_ps:")
+    doc.table(['pattern', 'heaters around a stick', 'sticks around a heater', 'heaters per stick (bulk)',
+               'k = plan area per stick / d^2'],
+              [[nm, str(p['around_stick']), str(p['around_heater']), f"{p['rho']:g}", f"{p['k']:.3f}"]
+               for nm, p in LY.PATTERNS.items()], widths=[1.3, 1.3, 1.3, 1.3, 1.6])
+    doc.p("Stick count (size_hot_zone -> layout.plan): N_req = ceil(P_rated / P_stick). Below 20 sticks only "
+          "'feasible' counts are allowed: the smallest Tier A count >= N_req. A Tier A cluster has every stick fully "
+          "surrounded, no empty stick slot enclosed by its heaters, every slot inside its convex hull filled, and "
+          "at least three mirror axes (D3 / D4 / D6). From 20 sticks N_ps = N_req, in a round cluster (the N_ps stick "
+          "sites nearest the high-symmetry centre that needs the fewest heaters); N_h is every heater site next to "
+          "a stick, so the heaters per stick approach the bulk ratio as the plant grows.")
+    doc.code(LY.table())
+    doc.fig(LY.plot_patterns(), "Feasible (Tier A) layouts below 20 sticks: sticks (blue squares) and heaters "
+                                "(red circles) at unit stick-heater spacing; title N_ps + N_h.", width=6.4,
+            name='Figure 5.1a')
+    doc.eq(r'A_s = \pi r_{out}^2 + \rho\,A_{hcav} = k\,d^2,\qquad D_{hot} = 2\left(d \max_i |x_i| + d/2\right)',
+           where='A_s: plan area per stick (its cell circle: graphite + cavity, and its bulk share rho of heater '
+                 'cavities); d: stick-heater centre spacing; x_i: unit-spacing positions of every stick and heater '
+                 'about the cluster centroid. Checkerboard: k = 2 and d = the old pitch p = sqrt(A_c / 2).')
+    doc.eq(r'm_g = \rho_g H \left[(N_{ps} + N_h)\frac{k d^2}{1 + \rho} - N_{ps} S^2 - N_h A_{hcav}\right],\qquad '
+           r'\phi_{fill} = \frac{N_{ps}\,\pi (r_{out}^2 - r_{in}^2) H}{A_{hot} H}',
+           where='m_g: graphite (cost, column and foundation load): every cavity\'s lattice cell (k d^2 / (1 + rho) '
+                 'per site) less the cavities, so the perimeter heaters carry their graphite; the rest of the '
+                 'hot-zone circle is insulation, while the side losses use the full circle (conservative). The '
+                 'stick cells\' graphite N_ps V_block is the part that swings (E_th; phi_fill spreads the roof / '
+                 'floor loss over the cells, section 5.7).')
     doc.eq(r'E_{th} = N_{ps} E_{stick,th},\qquad \epsilon_E = \frac{N_{ps} E_{stick,e}}{P_{rated}\,t_{dur}} - 1',
-           where='epsilon_E (energy_mismatch) is reported and warned above 1 %. The hot zone is not resized; the '
-                 'optimizer makes epsilon_E < -1 % a constraint.')
-    doc.p("On a checkerboard each site covers p^2, so one stick + heater pair covers 2 p^2 = A_c. All of a pair's "
-          "graphite is assigned to the stick's annulus (r_in to r_out); the heater site contributes only its "
-          "cavity. The heater-cell model gets the same graphite volume (section 4.6). Both cell models therefore "
-          "describe the same graphite, one for discharge and one for charge.")
-    doc.p("Graphite walls between cavities (cavity_webs, tank.py:284-297; the optimizer constraint is min wall >= "
-          "geometry.min_wall). The stick cavity is a square of side S, whose perimeter equals that of the r_in "
-          "circle. The heater cavity is a circle of radius r_hc. The optimizer uses the rotated layout: squares are "
-          "turned 45 deg, corners point to the heaters and faces to the diagonal stick neighbours:")
-    doc.eq(r'S = \pi r_{in}/2,\quad w_{sh} = p - S/\sqrt{2} - r_{hc},\quad w_{ss} = \sqrt{2}\,p - S,'
-           r'\quad w_{hh} = \sqrt{2}\,p - 2 r_{hc}')
-    doc.p("Unrotated squares (rotated=False): w_sh = p - S/2 - r_hc and w_ss = sqrt(2) (p - S).")
+           where='epsilon_E (energy_mismatch) is reported and warned above 1 %; rounding up to a feasible count '
+                 'makes it positive. The optimizer makes epsilon_E < -1 % a constraint.')
+    doc.p("Heaters: the N_h heaters charge the stick cells' graphite, so the heater cell holds N_ps / N_h of a "
+          "stick cell's graphite (heater.cell_graphite_ratio, section 4.6) and the heater power, element, leads, "
+          "heater capex and the charging draw are per heater x N_h. The optimizer fixes (N_ps, N_h) before the "
+          "heater search with a provisional heater (optimize.plant_counts) and repeats the search once if the "
+          "searched cavity changes them. Hung equipment for the foundation: hung_kg_per_pair x (N_ps + N_h) / 2.")
+    doc.p("Graphite walls between cavities (tank.cavity_webs -> layout.webs; the optimizer constraint is min wall "
+          ">= geometry.min_wall). The stick cavity is a square of side S, whose perimeter equals that of the r_in "
+          "circle; the heater cavity a circle of radius r_hc. Checkerboard: squares turned 45 deg, corners to the "
+          "heaters and faces to the diagonal stick neighbours:")
+    doc.eq(r'S = \pi r_{in}/2,\quad w_{sh} = d - S/\sqrt{2} - r_{hc},\quad w_{ss} = \sqrt{2}\,d - S,'
+           r'\quad w_{hh} = \sqrt{2}\,d - 2 r_{hc}')
+    doc.p("Hexagonal patterns: the square's rotation (0-90 deg in 0.5 deg steps) that gives the thickest thinnest "
+          "wall; walls from the exact point-to-square and square-to-square distances to the nearest neighbours of "
+          "each kind.")
     if cy is not None:
         r_in, r_out, r_hc, lab = cy.m.r_in, cy.m.r_out, cy.hm.r_in, 'example design'
     elif ctx.get('top'):
@@ -659,17 +684,20 @@ def sec_tank(doc, ctx):
     else:
         r_in, r_out, r_hc, lab = 0.943, 1.512, 0.345, 'illustrative dimensions'
     fig, p_, webs = _fig_plan(r_in, r_out, r_hc, lab)
-    doc.fig(fig, f"Checkerboard hot zone in plan ({lab}: r_in {r_in:.3f} m, r_out {r_out:.3f} m, r_hc {r_hc:.3f} m). "
+    doc.fig(fig, f"Checkerboard hot zone in plan, bulk ({lab}: r_in {r_in:.3f} m, r_out {r_out:.3f} m, r_hc {r_hc:.3f} m). "
                  "Stick cavities (blue sticks) and heater cavities (red heaters) alternate on pitch p. The dashed "
                  "circle is the stick cell's analysis annulus (area pi r_out^2), which overlaps its neighbours: it "
                  "is an equal-area model, not a geometric boundary.", width=5.6, name='Figure 5.1')
     sq = (math.pi - math.pi ** 2 / 4) * r_in ** 2 / (math.pi * (r_out ** 2 - r_in ** 2))
     doc.review(f"Two different cavity areas are used. V_block subtracts a circular stick cavity, pi r_in^2, but "
                f"cavity_webs and the layout use a square of equal perimeter, area pi^2 r_in^2/4 (21 % smaller). "
-               f"The real graphite per stick is therefore about {sq * 100:.0f} % more than modelled ({lab}). Also, "
-               "the half-pitch ring added to D_hot counts in the plan area and fill, but any graphite in it is not "
-               "in m_graphite, E_th, the cost or p_bear. [confidence medium; mass and cost effect a few %] "
-               "(tank.py:209, 292, 305)")
+               f"The real graphite per stick is therefore about {sq * 100:.0f} % more than the swing graphite "
+               f"modelled ({lab}). [confidence medium; effect a few % on the stored heat] (tank.size_hot_zone)")
+    doc.review("Perimeter graphite and heaters: the graphite outside the stick cells (around the perimeter heaters and "
+               "the half-spacing ring) is costed and loaded but taken as held hot, not swung; the heater cell is the "
+               "average heater (N_ps / N_h of a stick cell's graphite), so perimeter heaters, which charge less "
+               "graphite, would in practice run at lower power than the interior ones. The analysis cells stay "
+               "annular for every pattern. [confidence medium; matters most for small plants and hex6]")
 
     # ---------------- 5.2
     doc.h2('5.2 Tank geometry')

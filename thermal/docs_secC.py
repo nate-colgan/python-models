@@ -225,7 +225,7 @@ def _sec_heater(doc, cfg, opt, cy):
         ['heater', 'heater solve bracket', '[max T_w + 0.1 K, T_h,max]', _ref('tinless.py', 'T_lo = T_inner_max + 0.1')],
         ['heater', 'heater fallback', 'T_h = T_h,max (power may exceed cap)', _ref('tinless.py', 'T_h = heater.max_temperature')],
         ['heater', 'heater power cap', f"max_power_per_m x H ({P_cap / 1e6:.2f} MW in the YAML)",
-         _ref('build.py', 'def heater_max_power')],
+         _ref('heater.py', 'def heater_max_power')],
         ['heater', 'heater-cell initial state', 'uniform T_min', _ref('build.py', 'np.full((nA, nR), float(m.T_min))')],
     ]
     return rows
@@ -552,7 +552,7 @@ def sec_transient(doc, ctx):
         'Electrical power per active ring: P_i = Q_cell,i x eta(T_liner,in,i, q_i) x (1 - D_c) (section 4.5).',
         'Choose dt from the time and the vane state (6.3).',
         'Roof/floor sink Q_sink(T) at the start-of-step temperatures, held for the step (6.8).',
-        f"Conduction update ({_ref('tinless.py', 'dQ_dTw=-_ax.last')}): storage.update_temps(T, -Q_rad, dt, sub_steps, "
+        f"Conduction update ({_ref('tinless.py', 'dQ_dTw=-_D_eff')}): storage.update_temps(T, -Q_rad, dt, sub_steps, "
         "dQ_dTw, Q_out = Q_sink). Inside each sub-step conduction is explicit, and the wall heat input is implicit "
         "and linearised about the start-of-step wall temperatures (IMEX, section 4.1; equation below).",
         't <- t + dt; test the cutoff (6.5).',

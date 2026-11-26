@@ -229,7 +229,7 @@ def sec_inputs_geometry(doc, ctx):
         ['dt_short_duration', '3600 s', ref('build.py', "dt_short_duration=cfg.get('dt_short_duration'")],
         ['degradation.emis_end', '0.8', ref('build.py', "e_end = float(deg.get('emis_end'")],
         ['powerstick.tungsten_foil_thickness', '25 um (deposition only)', ref('build.py', "tungsten_foil_thickness")],
-        ['heater.max_power', 'max_power_per_m x H (KeyError if both missing)', ref('build.py', 'def heater_max_power')],
+        ['heater.max_power', 'max_power_per_m x H (KeyError if both missing)', ref('heater.py', 'def heater_max_power')],
     ]
     doc.table(['key', 'default', 'where'], dflt, widths=[2.4, 2.8, 1.9], size=8)
 
@@ -427,7 +427,7 @@ def sec_inputs_geometry(doc, ctx):
         ['cavity radius r_hc', f"{hm.r_in * 1e3:.1f} mm (AR {hm.area_ratio:g})", ref('build.py', 'r_in = ar * r_h')],
         ['outer radius r_out,h', f"{hm.r_out * 1e3:.1f} mm", ref('build.py', 'r_out = float(np.sqrt(V / (np.pi * H)')],
         ['graphite volume', f"{hm.V:.3f} m3 (same as stick cell)", ref('build.py', 'V = np.pi * (st.block.rad_out')],
-        ['heater power cap', f"{hm.heater.max_power / 1e6:.3f} MW", ref('build.py', 'def heater_max_power')],
+        ['heater power cap', f"{hm.heater.max_power / 1e6:.3f} MW", ref('heater.py', 'def heater_max_power')],
         ['heater max surface T / emissivity', f"{h['max_temperature']} K / {h['emissivity']}", ref('build.py', 'heater = HeatingElement(')],
         ['initial block T', f"uniform T_min = {hm.T_min:.0f} K", ref('build.py', 'initial_temp_distribution=np.full((nA, nR), float(m.T_min))')],
         ['charge stops at', f"volume-average T >= T_max = {hm.T_max:.0f} K", ref('build.py', 'kw = dict(T_block_max')],
@@ -572,7 +572,7 @@ def _sec_block(doc, ctx, m, hm):
           "implicitly, while conduction stays explicit (IMEX):")
     doc.eq(r'\left(\frac{C_w}{\Delta t_s}\,I - D\right)\,T_w^{m+1} = \frac{C_w}{\Delta t_s}\,T_w^m + N^{cond}_w + Q_0 '
            r'- D\,T_{w0},\qquad Q_w = Q_0 + D\,(T_w^{m+1} - T_{w0})',
-           where=f"Q_0 = -Q_rad (into the block), D = -dQ_rad/dT_w ({ref('tinless.py', 'dQ_dTw=-_ax.last')}); "
+           where=f"Q_0 = -Q_rad (into the block), D = -dQ_rad/dT_w ({ref('tinless.py', 'dQ_dTw=-_D_eff')}); "
                  f"solve: {ref('components.py', 'Tw_new = np.linalg.solve')}. Q_w is added to the wall node's net, "
                  "so the explicit formula reproduces T_w^(m+1).")
     doc.p("The radiation solution, the vane position and the sink are evaluated once per macro time step "
@@ -862,7 +862,7 @@ def sec_stick(doc, ctx):
           "emitter:")
     doc.eq(r'\eta_0 = a\,T_{Li}^2 + b\,T_{Li} + c,\qquad \eta = \eta_0\;0.998^{\,2\,q_{cell}\,(1-\eta_0)}')
     doc.eq(r'P_{el,k} = (1 - D_c)\,\eta\,Q_{cell,k},\qquad Q_{waste,k} = Q_{ps,k} - P_{el,k}',
-           where=f"{ref('axial.py', 'eff = panel_efficiency(self.liner.band_gap')}; D_c = cell degradation "
+           where=f"{ref('axial.py', 'eff = cell_efficiency(self.liner.band_gap')}; D_c = cell degradation "
                  f"(sim.cell_eff_factor = 1 - D_c, {ref('build.py', 'sim.cell_eff_factor = 1.0 - D_deg')}).")
     a_, b_, c_ = _PANEL_EFF_COEFFS[bg] if bg in _PANEL_EFF_COEFFS else (np.nan,) * 3
     Tpk = -b_ / (2 * a_)
